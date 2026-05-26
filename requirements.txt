@@ -1,0 +1,5 @@
+gudhi
+matplotlib
+networkx
+numpy
+pandas

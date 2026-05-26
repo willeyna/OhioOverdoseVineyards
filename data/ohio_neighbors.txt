@@ -1,0 +1,88 @@
+Adams	Highland	Brown	exterior	Scioto	Pike
+Allen	Putnam	VanWert	Auglaize	Hardin	Hancock
+Ashland	Huron	Richland	Knox	Holmes	Wayne	Medina	Lorain
+Ashtabula	exterior	Lake	Geauga	Trumbull
+Athens	Perry	Hocking	Vinton	Meigs	exterior	Washington	Morgan
+Auglaize	VanWert	Mercer	Shelby	Logan	Hardin	Allen
+Belmont	Harrison	Guernsey	Noble	Monroe	exterior	Jefferson
+Brown	Clinton	Clermont	exterior	Adams	Highland
+Butler	Preble	exterior	Hamilton	Warren	Montgomery
+Carroll	Stark	Tuscarawas	Harrison	Jefferson	Columbiana
+Champaign	Logan	Shelby	Miami	Clark	Madison	Union
+Clark	Champaign	Miami	Montgomery	Greene	Madison
+Clermont	Warren	Hamilton	exterior	Brown	Clinton
+Clinton	Greene	Warren	Clermont	Brown	Highland	Fayette
+Columbiana	Mahoning	Stark	Carroll	Jefferson	exterior
+Coshocton	Holmes	Knox	Licking	Muskingum	Guernsey	Tuscarawas
+Crawford	Seneca	Wyandot	Marion	Morrow	Richland	Huron
+Cuyahoga	exterior	Lorain	Medina	Summit	Geauga	Lake
+Darke	Mercer	exterior	Preble	Montgomery	Miami	Shelby
+Defiance	Williams	exterior	Paulding	Putnam	Henry
+Delaware	Marion	Union	Franklin	Licking	Knox	Morrow
+Erie	exterior	Ottawa	Sandusky	Huron	Lorain
+Fairfield	Franklin	Pickaway	Hocking	Perry	Licking
+Fayette	Madison	Greene	Clinton	Highland	Ross	Pickaway
+Franklin	Delaware	Union	Madison	Pickaway	Fairfield	Licking
+Fulton	exterior	Williams	Henry	Lucas
+Gallia	Vinton	Jackson	Lawrence	exterior	Meigs
+Geauga	Lake	Cuyahoga	Portage	Trumbull	Ashtabula
+Greene	Montgomery	Warren	Clinton	Fayette	Madison	Clark
+Guernsey	Tuscarawas	Coshocton	Muskingum	Noble	Belmont	Harrison
+Hamilton	Butler	exterior	Clermont	Warren
+Hancock	Wood	Putnam	Allen	Hardin	Wyandot	Seneca
+Hardin	Hancock	Allen	Auglaize	Logan	Union	Marion	Wyandot
+Harrison	Carroll	Tuscarawas	Guernsey	Belmont	Jefferson
+Henry	Fulton	Williams	Defiance	Putnam	Wood	Lucas
+Highland	Clinton	Brown	Adams	Pike	Ross	Fayette
+Hocking	Fairfield	Pickaway	Ross	Vinton	Athens	Perry
+Holmes	Wayne	Ashland	Knox	Coshocton	Tuscarawas	Stark
+Huron	Erie	Sandusky	Seneca	Crawford	Richland	Ashland	Lorain
+Jackson	Ross	Pike	Scioto	Lawrence	Gallia	Vinton
+Jefferson	Columbiana	Carroll	Harrison	Belmont	exterior
+Knox	Richland	Morrow	Delaware	Licking	Coshocton	Holmes	Ashland
+Lake	exterior	Cuyahoga	Geauga	Ashtabula
+Lawrence	Jackson	Scioto	exterior	Gallia
+Licking	Delaware	Franklin	Fairfield	Perry	Muskingum	Coshocton	Knox
+Logan	Auglaize	Shelby	Champaign	Union	Hardin
+Lorain	exterior	Erie	Huron	Ashland	Medina	Cuyahoga
+Lucas	exterior	Fulton	Henry	Wood	Ottawa
+Madison	Union	Champaign	Clark	Greene	Fayette	Pickaway	Franklin
+Mahoning	Trumbull	Portage	Stark	Columbiana	exterior
+Marion	Wyandot	Hardin	Union	Delaware	Morrow	Crawford
+Medina	Lorain	Ashland	Wayne	Summit	Cuyahoga
+Meigs	Athens	Vinton	Gallia	exterior
+Mercer	VanWert	exterior	Darke	Shelby	Auglaize
+Miami	Shelby	Darke	Montgomery	Clark	Champaign
+Monroe	Noble	Washington	exterior	Belmont
+Montgomery	Darke	Preble	Butler	Warren	Greene	Clark	Miami
+Morgan	Muskingum	Perry	Athens	Washington	Noble
+Morrow	Crawford	Marion	Delaware	Knox	Richland
+Muskingum	Coshocton	Licking	Perry	Morgan	Noble	Guernsey
+Noble	Guernsey	Muskingum	Morgan	Washington	Monroe	Belmont
+Ottawa	Lucas	Wood	Sandusky	Erie	exterior
+Paulding	exterior	VanWert	Putnam	Defiance
+Perry	Licking	Fairfield	Hocking	Athens	Morgan	Muskingum
+Pickaway	Franklin	Madison	Fayette	Ross	Hocking	Fairfield
+Pike	Ross	Highland	Adams	Scioto	Jackson
+Portage	Geauga	Summit	Stark	Mahoning	Trumbull
+Preble	Darke	exterior	Butler	Montgomery
+Putnam	Defiance	Paulding	VanWert	Allen	Hancock	Henry
+Richland	Huron	Crawford	Morrow	Knox	Ashland
+Ross	Pickaway	Fayette	Highland	Pike	Jackson	Vinton	Hocking
+Sandusky	Wood	Seneca	Huron	Erie	Ottawa
+Scioto	Pike	Adams	exterior	Lawrence	Jackson
+Seneca	Sandusky	Wood	Hancock	Wyandot	Crawford	Huron
+Shelby	Auglaize	Mercer	Darke	Miami	Champaign	Logan
+Stark	Summit	Wayne	Holmes	Tuscarawas	Carroll	Columbiana	Mahoning	Portage
+Summit	Cuyahoga	Medina	Wayne	Stark	Portage
+Trumbull	Ashtabula	Geauga	Portage	Mahoning	exterior
+Tuscarawas	Holmes	Coshocton	Guernsey	Harrison	Carroll	Stark
+Union	Hardin	Logan	Champaign	Madison	Franklin	Delaware	Marion
+VanWert	Paulding	exterior	Mercer	Auglaize	Allen	Putnam
+Vinton	Hocking	Ross	Jackson	Gallia	Meigs	Athens
+Warren	Montgomery	Butler	Hamilton	Clermont	Clinton	Greene
+Washington	Noble	Morgan	Athens	exterior	Monroe
+Wayne	Medina	Ashland	Holmes	Stark	Summit
+Williams	exterior	Defiance	Henry	Fulton
+Wood	Henry	Hancock	Seneca	Sandusky	Ottawa	Lucas
+Wyandot	Hancock	Hardin	Marion	Crawford	Seneca
