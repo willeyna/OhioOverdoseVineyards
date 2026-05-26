@@ -19,17 +19,6 @@ This repository contains:
 - `data/`: overdose datasets and Ohio county adjacency file
 - `figures/`: generated example outputs
 
-## Requirements
-
-Tested with Python 3.10+.
-
-Install dependencies:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
 
 ## Usage
 
@@ -53,24 +42,4 @@ The repository currently includes:
 - `data/pop_normalized_county_drug_death.csv`
 - `data/ohio_neighbors.txt`
 
-If you publish this repository, make sure you are comfortable sharing these files under your intended distribution terms.
 
-## Notes
-
-- The vineyard plot script currently uses cumulative counts by default.
-- The plotting logic now includes the top `k` seed vines together with any vine that shares a representative county with one of those seed vines.
-- Notebook files are included for analysis, but the runnable entry points for others are the Python scripts above.
-
-## GitHub
-
-To publish after Git initialization:
-
-```bash
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin <your-github-repo-url>
-git push -u origin main
-```
-
-This repository does not yet include a license file. If you want others to reuse it clearly, add a license before publishing.
