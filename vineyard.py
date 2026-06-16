@@ -1302,7 +1302,7 @@ class Vineyard():
                 selected_ids.add(id(vine))
         return selected_vines
 
-    def plot_selected_vines(self, vine_ranks, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False):
+    def plot_selected_vines(self, vine_ranks, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False, xlabel = "Birth", ylabel = "Death", zlabel = "Time"):
         # Plot finite vines selected by their persistence rank. Ranks are zero-based.
         ranked_vines = self.nontrivial_finite_vines()
         seed_vines = []
@@ -1321,9 +1321,12 @@ class Vineyard():
             end_timestep,
             exclude,
             region_colors,
+            xlabel,
+            ylabel,
+            zlabel,
         )
 
-    def plot_vine_list(self, vines, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False):
+    def plot_vine_list(self, vines, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False, xlabel = "Birth", ylabel = "Death", zlabel = "Time"):
         # Plot the exact Vine objects provided by the caller.
         plot_vines = self._expand_represented_vines(list(vines), include_represented_vines)
         return self._plot_vine_list(
@@ -1335,9 +1338,12 @@ class Vineyard():
             end_timestep,
             exclude,
             region_colors,
+            xlabel,
+            ylabel,
+            zlabel,
         )
     
-    def plot(self, start_k = 0, end_k = None, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False):
+    def plot(self, start_k = 0, end_k = None, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, include_represented_vines = False, xlabel = "Birth", ylabel = "Death", zlabel = "Time"):
         # Plot top k nontrivial finite vines. If include_represented_vines is
         # True, also plot any vines represented by one of those top-k vines.
         # If label_by_region, color the edges of vines by which region the death simplex comes from.
@@ -1352,9 +1358,12 @@ class Vineyard():
             end_timestep,
             exclude,
             region_colors,
+            xlabel,
+            ylabel,
+            zlabel,
         )
 
-    def _plot_vine_list(self, seed_vines, plot_vines, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None):
+    def _plot_vine_list(self, seed_vines, plot_vines, label_by_region = False, show_legend = True, start_timestep = 0, end_timestep = None, exclude = [], region_colors = None, xlabel = "Birth", ylabel = "Death", zlabel = "Time"):
         plt.figure(figsize = (10, 10))
         ax = plt.axes(projection = '3d')
         cmap = plt.cm.tab20
@@ -1362,9 +1371,14 @@ class Vineyard():
         indices = np.append(indices[::2], indices[1::2])
         color = cmap(indices)
         ax.set_prop_cycle(color = color)
-        ax.set_xlabel('Birth')
-        ax.set_ylabel('Death')
-        ax.set_zlabel('Time')
+        axis_label_fontsize = 16
+        axis_label_pad = 20
+        ax.set_xlabel(xlabel, fontsize = axis_label_fontsize, labelpad = axis_label_pad)
+        ax.set_ylabel(ylabel, fontsize = axis_label_fontsize, labelpad = axis_label_pad)
+        ax.set_zlabel("")
+        ax.tick_params(axis = 'x', labelsize = 10, pad = 6)
+        ax.tick_params(axis = 'y', labelsize = 10, pad = 6)
+        ax.tick_params(axis = 'z', labelsize = 10, pad = 6)
         
         if label_by_region: 
             prev_region_colors = {}
@@ -1386,8 +1400,8 @@ class Vineyard():
         plot_start_time = None
         plot_end_time = None
         for v in plot_vines:
-            vine_alpha = 1 if id(v) in seed_vine_ids else .5
-            vine_linewidth = 2 if id(v) in seed_vine_ids else 1
+            vine_alpha = 1
+            vine_linewidth = 2
             # v.births, v.death, v.vertex_times are computed when nontrivial_vines(k) is called.
             vertex_times, births, deaths = v.get_vertices(start_timestep, end_timestep)
             plot_start_time = vertex_times[0] if plot_start_time is None else min(plot_start_time, vertex_times[0])
@@ -1437,7 +1451,7 @@ class Vineyard():
             plt.legend(
                 handles=patches,
                 ncol = ncol,
-                loc = "upper right",
+                loc = "upper left",
                 fontsize = "medium",
                 labelspacing = .6,
                 handlelength = 1.6,
@@ -1452,6 +1466,16 @@ class Vineyard():
         xx, zz = np.meshgrid(xs, range(z_start, z_end + 1))
         yy = xx
         ax.plot_surface(xx, yy, zz, alpha = .2, color = 'slategrey')
+        if zlabel:
+            ax.text2D(
+                .9,
+                .84,
+                zlabel,
+                transform = ax.transAxes,
+                fontsize = axis_label_fontsize,
+                ha = "left",
+                va = "center",
+            )
         plt.show()
         return region_colors
     
