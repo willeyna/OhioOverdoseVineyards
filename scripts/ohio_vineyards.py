@@ -6,7 +6,7 @@ cumulative = True
 # homology degree
 degree = 1
 # takes the top n_vines most persistent vines for plotting
-n_vines = 5
+n_vines = 6
 
 #################################################################
 
@@ -52,4 +52,4 @@ vy.print_nontrivial_vines(0, top_vine_end_k)
 
 # Plot the top n_vines most persistent vines together with any vines that are
 # represented by one of those top vines, so representative switches stay visible.
-vy.plot(0, top_vine_end_k, label_by_region=True, include_represented_vines=True)
+vy.plot(0, top_vine_end_k, label_by_region=True, include_represented_vines=True, xlabel='Birth (Overdose Deaths)', ylabel='Death (Overdose Deaths)', zlabel = 'Month')
