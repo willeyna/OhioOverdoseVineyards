@@ -1,0 +1,2024 @@
+---
+title: Testing Uniform Null Hypothesis Models for Ohio County-Month Overdose Deaths
+authors: Nick Bermingham, David White, Nathan Willey
+format:
+  html:
+    code-fold: true
+    code-summary: Show code
+    code-tools: false
+    code-overflow: wrap
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+
+## Introduction
+
+This notebook carries out simulation-based null hypothesis tests for monthly Ohio county overdose deaths. The goal is to first test whether the observed county-month death counts look compatible with spatially uniform null hypothesis models once the statewide monthly total is fixed, and then (once the above hypothesis is rejected) to test whether there is spatial autocorrelation. Recall that the idea of null hypothesis testing is to find out how extreme the data is, if the null hypothesis were true. So, every null hypothesis test needs a test statistic, a random mechanism that produces hypothetical null hypothesis datasets, and a way to compute a p-value.
+
+Spatial structure in overdose death data has practical public-health implications. If high overdose rates are spatially clustered, then neighboring counties may be sharing risk factors, drug-supply conditions, treatment-access problems, or other regional mechanisms. Detecting and tracking that clustering can help epidemiologists and public-health agencies decide where to allocate outreach, naloxone distribution, treatment capacity, and other resources. In addition, these tests can be carried out on other data sets. In particular, they can be carried out on the residuals of a model, to test if the residuals have spatial autocorrelation. If they do, then that's evidence the model is not a good fit to the data.
+
+Statisticians have created tests for a wide variety of settings, including spatial statistics. Using topological data analysis (TDA) we can come up with new test statistics, e.g., the lifespan of the largest topological feature. Many such test statistics are not sums or averages, so the Central Limit Theorem does not apply. Rather than making strong assumptions about the distribution of the given point cloud (e.g., that it follows a multivariate normal distribution), we use a randomization-based approach which involves simulating many hypothetical worlds that could have happened if the null hypothesis were true, and then counting how many have a test statistic as extreme as the one we actually observed.
+
+This notebook includes both traditional statistical tests and new TDA-based tests. For the traditional ones, we use goodness-of-fit and spatial autocorrelation statistics like Moran's I. For the TDA-based tests, we use two kinds of topological summaries. For the spatial-allocation null hypotheses, we use scalar summaries of the sublevel set $H_1$ persistence diagram on the Ohio county surface. For the spatial-autocorrelation null hypothesis, we use a TDA-spatial $H^0$ persistence test that tracks connected components of high-rate counties under random spatial rearrangements.
+
+In both cases, the observed statistic is compared against simulated null hypothesis distributions, and empirical p-values are computed. The TDA-based tests agree with the traditional statistical tests for the population-weighted per-capita null hypothesis, which is the most epidemiologically meaningful spatial-uniformity hypothesis here. They also show why the choice of TDA statistic must be matched carefully to the null hypothesis being tested.
+
+The motivating scientific question is whether county overdose deaths contain spatial structure beyond what these spatial null hypothesis models would create. These tests are a calibration step before the vineyard analysis, where we study how topological features evolve over time.
+
+Unlike the vineyard analysis in the paper, this notebook uses monthly counts and monthly deaths per capita, not cumulative counts or cumulative rates. The reason is that the tests here ask whether the spatial allocation within a given month is compatible with particular spatial null hypothesis models, while the vineyard analysis asks how cumulative hotspot geometry evolves over time.
+
+## Where is the random sampling?
+
+Before talking about p-values, we have to say where randomness enters the picture. If a dataset is simply treated as a complete census of a fixed population, with no stochastic data-generating process in mind, then p-values are not meaningful: there is no relevant random mechanism producing alternative datasets against which the observed one can be compared.
+
+It would be wrong to claim that our data are a random sample from all counties in the United States, or that the months in the study are a random sample from all possible months. Instead, for a fixed month, we view the observed county death counts as one realization from a set of hypothetical worlds. That is: the number of deaths could have differed slightly, if a person had taken a slightly lower/higher dose, or if emergency medical services arrived slightly earlier/later, or if a random bystander was nearby with naloxone, etc.
+
+To test the simple null hypotheses in this notebook for a given month, we assume the statewide number of overdose deaths in that month is the same as observed, but the allocation of those deaths across counties is random according to a specified null hypothesis model. That is why the multinomial model is natural here. A multinomial draw fixes the total number of deaths in a month and redistributes those deaths among county cells. This is a conditional null hypothesis model, or allocation model: it does not model why the statewide monthly total was what it was, but it does model how deaths would have been spatially allocated if the relevant null hypothesis were true. The p-value is then the fraction of simulated null hypothesis worlds whose test statistic is at least as extreme as the statistic computed from the observed Ohio data.
+
+With $B$ simulated null hypothesis worlds, the empirical right-tail p-value reported in this notebook is
+
+$$
+\frac{\#\{\text{simulated null hypothesis statistic} \ge \text{observed statistic}\}}{B}.
+$$
+
+Thus, if no simulated null hypothesis world is as extreme as the observed data, the empirical p-value is reported as $0$. This should be read as a finite-simulation statement, namely that the p-value is smaller than the resolution of the simulation run, not as a claim that the mathematical probability is literally zero.
+
+## Null Hypotheses
+
+We test several null hypotheses in this file. Let us first fix notation.
+
+For each month $m$, let $T_m$ be the statewide number of overdose deaths and $X_{i,m}$ be the observed count in county $i$. Because the number of deaths is a count, we model it via the multinomial distribution. An alternative would be the Poisson distribution, but that does not fit well here because the expected value and variance in the data are not equal. In Null Hypothesis 1 and Null Hypothesis 2, we condition on $T_m$, so the statewide time trend is held fixed. These hypotheses can be tested month by month, or they can be tested with a global statistic that aggregates evidence across all months. The month-by-month version helps locate when the data depart from the null hypothesis; the global version gives one overall test of whether the null hypothesis model is plausible for the full study period. At this point we are testing the spatial allocation of deaths within each month, not yet looking at how things change over time.
+
+**Null Hypothesis 1: Raw equal-county null hypothesis.** Deaths are equally likely to fall in each county:
+
+$$
+X_{\cdot,m} \sim \operatorname{Multinomial}\left(T_m; 1/88,\ldots,1/88\right).
+$$
+
+This asks whether deaths are uniformly distributed over counties as administrative units. We expect this null hypothesis to be rejected because Ohio counties have very different population sizes and because large cities concentrate people, services, and overdose risk. We include it anyway as a deliberately crude baseline, both for completeness and to make the notebook useful to readers who may face similar spatial-allocation questions in settings where an administrative-area null hypothesis is a natural first comparison. Additionally, this test can be carried out on the residuals of a model instead of on raw death counts. If a model correctly captures the signal in the data, then the residuals would be noise, and this test should fail to reject Null Hypothesis 1.
+
+**Null Hypothesis 2: Population-weighted per-capita null hypothesis.** Deaths are uniformly distributed over people, so county probabilities are proportional to county population:
+
+$$
+X_{\cdot,m} \sim \operatorname{Multinomial}\left(T_m; p_{1,m},\ldots,p_{88,m}\right),
+\quad
+p_{i,m} =
+\frac{\operatorname{population}_{i,m}}{\sum_j \operatorname{population}_{j,m}}.
+$$
+
+This asks whether death risk is spatially uniform per capita. If we reject this null hypothesis, it tells us that different counties have statistically significantly different numbers of overdose deaths per capita.
+
+**Null Hypothesis 3: Spatially exchangeable county rates.** For each month, compute the county death rate
+
+$$
+R_{i,m}=\frac{X_{i,m}}{\operatorname{population}_{i,m}}.
+$$
+
+Null Hypothesis 3 says that, after we fix the collection of county rates observed in a month, those rates are randomly assigned to the counties. In other words, the graph locations of the rates are exchangeable under the null hypothesis. This asks whether neighboring counties have unusually similar death rates. If we reject this null hypothesis in a month, it tells us that the rates are more spatially autocorrelated than we would expect from randomly shuffling that month's rates over the Ohio map. As discussed in the Related Work section, we expect to reject this null hypothesis, as other researchers have shown that Ohio drug overdose data exhibits spatial autocorrelation. However, this test can also be useful on the residuals of a model. Any good model should produce residuals that do not have spatial autocorrelation.
+
+A final issue is that each null hypothesis can be turned into many tests. For example, we can test one statistic aggregated across all months, one statistic for each month, or several statistics for each null hypothesis model. If we inspect many p-values, some will be small even when the relevant null hypotheses are true, just due to chance alone. For example, if you work at the $5\%$ significance level, you expect to wrongly reject a true null hypothesis $5\%$ of the time. This is the multiple-testing problem, and it is common in time-series analysis. For example, it occurs whenever a researcher attempts to determine which lags in an autocorrelation function are statistically significant (e.g., which previous months matter for predicting the number of deaths in the current month). If twenty lags are examined separately at the $5\%$ significance level, one expects about one lag to appear significant by chance alone even if the underlying process has no autocorrelation.
+
+There are several standard ways to address the multiple-testing problem: pre-specify a small number of primary tests, aggregate the data into one global statistic, adjust p-values to control the overall false positive rate, split exploratory and confirmatory analyses, or use a model that treats the spatial and temporal structure jointly. One famous approach is to use the so-called Bonferroni correction, which demands a stronger level of proof for each test, in order to control the overall false positive rate. An alternative approach, Fisher's Least Significant Difference, essentially does not control the familywise false positive rate, and reports all tests where the p-value is less than the cutoff $\alpha$. This is a reasonable approach in exploratory rather than confirmatory contexts.
+
+The tradeoff is that procedures designed to reduce false positives can increase Type II error. A Type II error occurs when a null hypothesis is false, but the test fails to reject it. In a month-by-month analysis, this can happen simply because the signal in a particular month is weak, the test statistic is not well matched to the alternative, or the multiple-testing correction demands stronger evidence than an individual test can provide. This matters below: a large p-value should not automatically be read as evidence that a null hypothesis is true. It may simply mean that a Type II error occurred due to random chance.
+
+In this notebook, we include multinomial tests based on global summaries over all months (to avoid the multiple-testing problem), and when we compute month-by-month tests, we report p-values together with a Benjamini-Hochberg false-discovery-rate adjustment that we now explain.
+
+The Benjamini-Hochberg procedure is a standard way to handle a family of many related p-values. Suppose we have $M$ p-values from tests that we want to interpret as one family. The procedure sorts them as $p_{(1)} \le \cdots \le p_{(M)}$ and compares them with the increasing thresholds $\alpha/M, 2\alpha/M, \ldots, \alpha$. Equivalently, it converts the raw p-values into adjusted q-values: a q-value is the smallest false discovery rate level $\alpha$ at which that test would be rejected after accounting for all the other tests in the family. Thus, a test with q-value $0.03$ would be rejected when controlling the false discovery rate at $\alpha = 0.05$, while a test with q-value $0.20$ would not, even if the p-value of that same test was below $\alpha$.
+
+The phrase "false discovery rate" has a specific meaning. If we reject all tests with q-values below a chosen threshold, the Benjamini-Hochberg procedure controls the expected proportion of false discoveries among the rejected tests, under its standard assumptions. This differs from controlling the probability of making even one false rejection, which is stricter. For our purposes, q-values are useful because the month-by-month analyses are screening many related spatial tests, and we want to know which small p-values remain notable after accounting for that family. Benjamini and Hochberg's 1995 paper is the standard reference [2].
+
+## Roadmap
+
+This notebook does the following steps.
+
+1. Review related work that motivates the statistical tests below.
+2. Load monthly Ohio county overdose counts, county population data, and county adjacency data.
+3. Align county names and construct monthly population-weighted null hypothesis probabilities.
+4. Define classical goodness-of-fit statistics and TDA statistics for the same spatial null hypotheses.
+5. Simulate null hypothesis datasets under Null Hypothesis 1 and Null Hypothesis 2.
+6. Compare observed classical statistics with the simulated null hypothesis distributions.
+7. Test Null Hypothesis 3 with Moran's I, including both monthwise and global spatial-autocorrelation summaries.
+8. Use visual diagnostics for the classical null hypothesis simulations.
+9. Compute the TDA versions of the three null hypothesis tests, including a TDA-spatial $H^0$ spatial-dependence statistic for Null Hypothesis 3.
+
+## Related Work
+
+Several statistical traditions are relevant to this notebook and to the larger TDA/vineyard project.
+
+**Classical multinomial goodness-of-fit tests.** Pearson's chi-squared test and the likelihood-ratio G-test compare observed categorical counts with expected counts under a specified probability vector. Here the categories are counties and the probability vector is either equal over counties or proportional to population, so the calculation is exactly a multinomial goodness-of-fit problem. The simulation approach in this notebook is useful because monthly expected counts can be small and because we aggregate many monthly summaries into global statistics. See [1] for standard categorical-data goodness-of-fit tests.
+
+**Spatial autocorrelation and clustering.** Moran's I is a standard test for spatial autocorrelation: it asks whether neighboring regions tend to have similar values, given a spatial weights matrix. We carry out this test below. See [6] for Moran's I and related spatial autocorrelation methods.
+
+Several papers have used spatial or spatiotemporal statistical methods to study overdose patterns in Ohio. Choi et al. studied spatial clustering of heroin-related overdose incidents in Cincinnati [4]. Curtis et al. used spatial mixed methods to study geographic nuances of opioid overdose patterns in small and rural towns [8]. Hepler, McKnight, Bonny, and Kline developed a latent spatial factor approach for synthesizing opioid-associated deaths and treatment admissions in Ohio counties [11], and Kline, Ji, and Hepler developed a multivariate spatiotemporal factor model for the Ohio opioid epidemic [12]. McMaster et al. studied urban census-tract variation in overdose deaths in Cuyahoga County [14]. These works provide important statistical context for our analysis: they show that Ohio overdose data have already been fruitfully studied with spatial models, while this notebook asks a narrower calibration question about spatial null hypothesis models before moving to TDA vineyards.
+
+**Persistent homology and vineyards.** Our vineyard analysis treats county overdose intensity as a scalar field on a county adjacency complex. Sublevel set $H_1$ persistence detects loops that are filled by high-valued regions; the death simplex identifies the high region associated with a local maximum or hotspot. In [10], the authors introduce topological persistence, and [9] is a standard reference for persistent homology and sublevel set filtrations. Vineyards, introduced in [7], then track these persistence features over time, allowing us to ask whether hotspot structures persist rather than only appear in isolated monthly diagrams.
+
+**TDA tests for spatial dependence.** Byers, Pritchard, Turner, and Weighill [3] propose a persistent-homology test for spatial dependence and compare it with Moran's I on synthetic, election, and COVID datasets. Their most successful version uses $H^0$ persistence for a vertex-weighted adjacency graph: after filtering downward to detect peaks, they compute persistence statistics such as total lifespan and compare the observed value with values obtained by permuting weights over the graph. Limbeck and Rieck [13] extend this idea in spatial transcriptomics by using vectorized persistence diagrams, especially Betti curves and persistence landscapes, in a one-sample permutation test for spatial dependence. These papers suggest that if we want a TDA-spatial analogue of Moran's I, $H^0$ clustering summaries are a more natural starting point than the $H_1$ loop summaries used for hotspot-ring geometry below.
+
+**Simulation tests for persistent homology.** The work in [15] motivates the general strategy of simulating a null hypothesis model, computing persistence diagrams, reducing each diagram to a scalar statistic such as longest bar length, and comparing observed values with the simulated null hypothesis distribution. The multiple-testing perspective in [16] is also relevant when many persistence features are examined at once. The sliced-spatial-data goodness-of-fit framework in [5] is especially close to this project's motivation because it connects spatial slices, persistence vineyards, and topology-based null hypothesis testing.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:12:22.177692Z', iopub.status.busy: '2026-06-07T15:12:22.177480Z', iopub.status.idle: '2026-06-07T15:12:22.931438Z', shell.execute_reply: '2026-06-07T15:12:22.931226Z'}
+from __future__ import annotations
+ 
+import contextlib
+import io
+import math
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+HERE = Path.cwd().resolve()
+if HERE.name == "uniformity files":
+    UNIFORMITY_DIR = HERE
+    PROJECT_ROOT = HERE.parent
+else:
+    PROJECT_ROOT = HERE
+    UNIFORMITY_DIR = HERE / "uniformity files"
+
+DATA_COUNTS = PROJECT_ROOT / "data" / "county_drug_death.csv"
+POP_PATH = PROJECT_ROOT / "data" / "ohio_county_populations.csv"
+ADJ_PATH = PROJECT_ROOT / "data" / "ohio_neighbors.txt"
+VINEYARD_DIR = PROJECT_ROOT
+if str(VINEYARD_DIR) not in sys.path:
+    sys.path.insert(0, str(VINEYARD_DIR))
+
+from polygonal_surface import PolygonalSurface as PS
+
+@dataclass
+class Config:
+    """Configuration for the simulation study.
+
+    Attributes:
+        B: Number of Monte Carlo null hypothesis simulations per null hypothesis model.
+        seed: Random seed used for reproducible multinomial simulations.
+        save_outputs: Whether to write simulation and p-value CSV files.
+    """
+
+    B: int = 5000
+    seed: int = 471
+    save_outputs: bool = True
+
+CONFIG = Config()
+CONFIG
+```
+
+## Load and Align Data
+
+The overdose data are monthly county counts. The population data are yearly county population estimates. County naming conventions vary slightly across files, so the helper functions below normalize names such as `VanWert` and `Van Wert` to a common matching key.
+
+To test the population-weighted null hypothesis, a monthly population table is created by assigning each month the population estimate for its calendar year. If overdose months extend beyond the last available population year, the most recent population column is reused. This code is written to be generalizable in case future researchers want to test the same null hypotheses on future data.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:12:22.932563Z', iopub.status.busy: '2026-06-07T15:12:22.932447Z', iopub.status.idle: '2026-06-07T15:12:22.952779Z', shell.execute_reply: '2026-06-07T15:12:22.952580Z'}
+def normalize_county_key(name: str) -> str:
+    """Normalize county names for cross-file matching.
+
+    Args:
+        name: County name from a data table or adjacency file.
+
+    Returns:
+        A lowercase key with spaces and hyphens removed.
+    """
+    return str(name).replace(" ", "").replace("-", "").lower()
+
+
+def parse_month_label(label: str) -> tuple[int, int]:
+    """Parse a month label of the form ``YYYY_M``.
+
+    Args:
+        label: Month label, such as ``"2022_8"``.
+
+    Returns:
+        A pair ``(year, month)`` as integers.
+    """
+    year_text, month_text = str(label).split("_")
+    return int(year_text), int(month_text)
+
+
+def load_wide_csv(path: Path) -> pd.DataFrame:
+    """Load a wide county-by-month CSV.
+
+    Args:
+        path: Path to a CSV whose first unnamed column stores county names.
+
+    Returns:
+        A dataframe indexed by county, with one column per month.
+    """
+    return pd.read_csv(path).rename(columns={"Unnamed: 0": "county"}).set_index("county")
+
+
+def align_wide_county_table(df: pd.DataFrame, target_counties: list[str]) -> pd.DataFrame:
+    """Reorder a county-indexed table to match a target county list.
+
+    Args:
+        df: County-indexed wide dataframe.
+        target_counties: County names in the desired output order.
+
+    Returns:
+        A copy of ``df`` aligned to ``target_counties``.
+
+    Raises:
+        ValueError: If any target county cannot be matched after name normalization.
+    """
+    key_to_name = {normalize_county_key(idx): idx for idx in df.index}
+    aligned_names = []
+    missing = []
+    for county in target_counties:
+        key = normalize_county_key(county)
+        if key not in key_to_name:
+            missing.append(county)
+        else:
+            aligned_names.append(key_to_name[key])
+    if missing:
+        raise ValueError(f"Table is missing counties after normalized matching: {missing}")
+    aligned = df.loc[aligned_names].copy()
+    aligned.index = target_counties
+    return aligned
+
+
+def load_population_for_months(pop_path: Path, target_counties: list[str], month_labels: list[str]) -> pd.DataFrame:
+    """Build a monthly county population table.
+
+    Args:
+        pop_path: Path to a county-by-year population CSV.
+        target_counties: Counties to retain and order.
+        month_labels: Month labels that determine the output columns.
+
+    Returns:
+        A county-by-month dataframe of population estimates.
+    """
+    pop_yearly_raw = pd.read_csv(pop_path).rename(columns={"Unnamed: 0": "county"}).set_index("county")
+    pop_yearly_raw.columns = [str(c) for c in pop_yearly_raw.columns]
+    pop_yearly = align_wide_county_table(pop_yearly_raw, target_counties)
+    pop_monthly = pd.DataFrame(index=target_counties, columns=month_labels, dtype=float)
+    last_available_year = max(int(c) for c in pop_yearly.columns)
+    for label in month_labels:
+        year, _ = parse_month_label(label)
+        year_key = str(min(year, last_available_year))
+        pop_monthly[label] = pop_yearly[year_key].astype(float)
+    return pop_monthly
+
+
+counts_raw = load_wide_csv(DATA_COUNTS)
+counts_raw = counts_raw.loc[~counts_raw.index.astype(str).str.lower().isin(["total", "ohio"])]
+county_names = list(counts_raw.index)
+counts_df = align_wide_county_table(counts_raw, county_names)
+month_labels = list(counts_df.columns)
+pop_df = load_population_for_months(POP_PATH, county_names, month_labels)
+
+counts = counts_df.to_numpy(dtype=int)
+pop = pop_df.to_numpy(dtype=float)
+monthly_totals = counts.sum(axis=0).astype(int)
+
+print(f"Counties: {counts.shape[0]}")
+print(f"Months: {counts.shape[1]} ({month_labels[0]} through {month_labels[-1]})")
+print(f"Total observed deaths: {counts.sum():,}")
+print(f"Months with zero statewide deaths: {(monthly_totals == 0).sum()}")
+```
+
+## Classical and TDA Test Statistics
+
+For each month, observed counts $x_i$ are compared with expected counts $e_i = T_m p_i$. We want to test how well the observed data fit the distribution specified in each null hypothesis. The classical monthly summaries are:
+
+- `pearson_chi2`: Pearson's chi-squared statistic, $\sum_i (x_i-e_i)^2/e_i$.
+- `g_test`: the likelihood-ratio goodness-of-fit statistic.
+- `total_variation`: half the $L^1$ distance between observed and null hypothesis county shares.
+- `max_abs_standardized_residual`: the largest county-level standardized deviation.
+- `rate_variance`: a weighted variance of relative county rates.
+
+For each statistic, the notebook records the maximum over months, the mean over months, and the sum over months. A maximum asks whether any single month is unusually non-uniform; a sum asks whether non-uniformity accumulates across the full time series.
+
+We also use topological data analysis to create test statistics. For Null Hypothesis 1 and Null Hypothesis 2, we compute the exact sublevel set $H_1$ persistence diagram on the Ohio county surface and record two scalar summaries:
+
+- `max_h1_persistence`: the largest finite $H_1$ persistence in the month;
+- `total_h1_persistence`: the sum of finite $H_1$ persistences in the month.
+
+The first asks whether the strongest loop-like feature is unusually persistent; the second asks whether the month has unusually much total $H_1$ activity. For Null Hypothesis 3, we use a separate TDA-spatial $H^0$ spatial-dependence statistic motivated by [3], because spatial autocorrelation is more directly about connected clusters of similar values than about loop-like holes. To our knowledge, this is the first use of TDA test statistics for conditional spatial-allocation hypotheses of this kind: the statewide monthly total is fixed, deaths are redistributed according to a null hypothesis model, and a topological statistic of the resulting county scalar field is compared with the observed value.
+
+We caution against trying to match up the classical statistics with the TDA statistics. The classical goodness-of-fit statistics test whether the county count table departs from the specified multinomial allocation model, while the $H_1$ summaries ask whether the resulting scalar field has unusually persistent loop-like spatial structure. They are two different ways to test for spatial autocorrelation, and in principle one could reject the null hypothesis while the other fails to reject it. In our case, however, both reject the null hypothesis.
+
+The following code computes the classical statistics. The TDA statistics are computed below after the null hypothesis simulations have been constructed.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:12:22.953832Z', iopub.status.busy: '2026-06-07T15:12:22.953767Z', iopub.status.idle: '2026-06-07T15:12:22.956836Z', shell.execute_reply: '2026-06-07T15:12:22.956639Z'}
+def monthly_gof_stats(count_matrix: np.ndarray, prob_matrix: np.ndarray) -> pd.DataFrame:
+    """Compute monthly goodness-of-fit summaries.
+
+    Args:
+        count_matrix: Array of observed or simulated counts with shape
+            ``(n_counties, n_months)``.
+        prob_matrix: Null probabilities with the same shape, where each column
+            sums to one.
+
+    Returns:
+        A dataframe with one row per month and one column per statistic.
+    """
+    n_counties, n_months = count_matrix.shape
+    rows = []
+    eps = 1e-15
+    for j, label in enumerate(month_labels):
+        x = count_matrix[:, j].astype(float)
+        p = prob_matrix[:, j].astype(float)
+        total = float(x.sum())
+        if total <= 0:
+            rows.append(
+                {
+                    "month_index": j,
+                    "month_label": label,
+                    "total_deaths": 0,
+                    "pearson_chi2": 0.0,
+                    "g_test": 0.0,
+                    "total_variation": 0.0,
+                    "max_abs_standardized_residual": 0.0,
+                    "rate_variance": 0.0,
+                    "cvm_ordered": 0.0,
+                }
+            )
+            continue
+        expected = total * p
+        observed_share = x / total
+        pearson = float(np.sum((x - expected) ** 2 / np.maximum(expected, eps)))
+        positive = x > 0
+        g = float(2.0 * np.sum(x[positive] * np.log(x[positive] / np.maximum(expected[positive], eps))))
+        tv = float(0.5 * np.sum(np.abs(observed_share - p)))
+        max_resid = float(np.max(np.abs(x - expected) / np.sqrt(np.maximum(expected, eps))))
+        rate_var = float(np.sum(p * (observed_share / np.maximum(p, eps) - 1.0) ** 2))
+        cum_diff = np.cumsum(observed_share - p)
+        cvm = float(np.mean(cum_diff ** 2))
+        rows.append(
+            {
+                "month_index": j,
+                "month_label": label,
+                "total_deaths": int(total),
+                "pearson_chi2": pearson,
+                "g_test": g,
+                "total_variation": tv,
+                "max_abs_standardized_residual": max_resid,
+                "rate_variance": rate_var,
+                "cvm_ordered": cvm,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def aggregate_monthly_stats(monthly_stats: pd.DataFrame) -> dict[str, float]:
+    """Aggregate monthly statistics over the full study period.
+
+    Args:
+        monthly_stats: Output from ``monthly_gof_stats``.
+
+    Returns:
+        Dictionary containing sum, mean, and max aggregations for each statistic.
+    """
+    stat_cols = [
+        "pearson_chi2",
+        "g_test",
+        "total_variation",
+        "max_abs_standardized_residual",
+        "rate_variance",
+        "cvm_ordered",
+    ]
+    out = {}
+    for col in stat_cols:
+        values = monthly_stats[col].to_numpy(dtype=float)
+        out[f"{col}__sum"] = float(values.sum())
+        out[f"{col}__mean"] = float(values.mean())
+        out[f"{col}__max"] = float(values.max())
+    return out
+
+
+def empirical_pvalue_greater(null_values: np.ndarray, observed: float) -> float:
+    """Estimate a right-tail Monte Carlo p-value.
+
+    Args:
+        null_values: Simulated null hypothesis statistics.
+        observed: Observed statistic.
+
+    Returns:
+        The fraction of simulated null hypothesis statistics greater than or equal to
+        the observed statistic.
+    """
+    null_values = np.asarray(null_values)
+    return float(np.sum(null_values >= observed) / len(null_values))
+```
+
+## Construct Null Hypothesis Probability Matrices
+
+The following code constructs the probability matrix for Null Hypothesis 1 and Null Hypothesis 2. Each column of such a matrix represents one month, and each entry in that column is the probability that a death in that month is assigned to the corresponding county under the null hypothesis.
+
+The table displayed by the code is not the probability matrix itself. Instead, it reports the observed global classical test statistics computed from the actual data under Null Hypothesis 1 and Null Hypothesis 2. These are the observed values that will be compared with simulated null hypothesis distributions below.
+
+Null Hypothesis 3 uses a different kind of null hypothesis distribution, based on permuting observed county rates over the Ohio adjacency graph, so it is handled in the Moran's I section after the classical tests for Null Hypothesis 1 and Null Hypothesis 2.
+
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:12:22.957708Z', iopub.status.busy: '2026-06-07T15:12:22.957657Z', iopub.status.idle: '2026-06-07T15:12:22.970972Z', shell.execute_reply: '2026-06-07T15:12:22.970802Z'}
+n_counties, n_months = counts.shape
+raw_uniform_probs = np.full((n_counties, n_months), 1.0 / n_counties)
+per_capita_uniform_probs = pop / pop.sum(axis=0, keepdims=True)
+
+observed_monthly_raw = monthly_gof_stats(counts, raw_uniform_probs)
+observed_monthly_per_capita = monthly_gof_stats(counts, per_capita_uniform_probs)
+
+observed_aggregates = {
+    "raw_equal_county": aggregate_monthly_stats(observed_monthly_raw),
+    "per_capita_population_weighted": aggregate_monthly_stats(observed_monthly_per_capita),
+}
+
+pd.DataFrame(observed_aggregates).T
+```
+
+## Simulate the Global Null Hypotheses
+
+In this section, we simulate 5,000 hypothetical worlds based on the data we gathered and the assumption in each null hypothesis. We then compare how extreme our observed data was relative to the simulated distributions, and obtain a p-value.
+
+Each simulation preserves the observed monthly statewide totals exactly. Within a month, the deaths are reallocated across counties according to the null hypothesis probabilities for that month. In other words, these are conditional allocation tests: the statewide monthly total is treated as fixed, and the randomness is only in the spatial distribution of that fixed total.
+
+This design gives a global null hypothesis distribution for summaries accumulated over all months. We use the same allocation idea below for the TDA summaries, replacing the classical monthly summaries with topological summaries computed from the simulated scalar fields on the Ohio county adjacency complex.
+
+The code below produces a table with one row per simulated null hypothesis world. Each row records the aggregate classical test statistics for that simulated county-month table. These simulated values form the comparison distribution for the observed statistics above.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:12:22.971834Z', iopub.status.busy: '2026-06-07T15:12:22.971772Z', iopub.status.idle: '2026-06-07T15:13:11.193448Z', shell.execute_reply: '2026-06-07T15:13:11.193080Z'}
+def simulate_counts_under_null(rng: np.random.Generator, prob_matrix: np.ndarray) -> np.ndarray:
+    """Draw one full county-by-month count table from a multinomial null hypothesis model.
+
+    Args:
+        rng: NumPy random generator.
+        prob_matrix: County probabilities for each month.
+
+    Returns:
+        Simulated integer count matrix with the same shape as ``counts``.
+    """
+    simulated = np.zeros_like(counts, dtype=int)
+    for j, total in enumerate(monthly_totals):
+        if total > 0:
+            simulated[:, j] = rng.multinomial(int(total), prob_matrix[:, j])
+    return simulated
+
+
+def run_null_simulations(prob_matrix: np.ndarray, null_name: str, rng: np.random.Generator, B: int) -> pd.DataFrame:
+    """Run repeated multinomial null hypothesis simulations.
+
+    Args:
+        prob_matrix: County probabilities for each month.
+        null_name: Label for the null hypothesis model being simulated.
+        rng: NumPy random generator.
+        B: Number of Monte Carlo simulations.
+
+    Returns:
+        Dataframe with one row per simulation and one column per aggregate statistic.
+    """
+    rows = []
+    for b in range(1, B + 1):
+        sim = simulate_counts_under_null(rng, prob_matrix)
+        monthly = monthly_gof_stats(sim, prob_matrix)
+        rows.append({"simulation": b, "null": null_name, **aggregate_monthly_stats(monthly)})
+    return pd.DataFrame(rows)
+
+rng = np.random.default_rng(CONFIG.seed)
+null_raw = run_null_simulations(raw_uniform_probs, "raw_equal_county", rng, CONFIG.B)
+null_per_capita = run_null_simulations(per_capita_uniform_probs, "per_capita_population_weighted", rng, CONFIG.B)
+null_all = pd.concat([null_raw, null_per_capita], ignore_index=True)
+
+if CONFIG.save_outputs:
+    null_all.to_csv(UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_null_simulations.csv", index=False)
+
+null_all.head()
+```
+
+## Empirical P-values
+
+For each observed statistic, classical or topological, the empirical p-value is the proportion of simulated null hypothesis datasets whose statistic is at least as large as the observed statistic. Smaller values indicate stronger evidence against the corresponding spatial uniformity null hypothesis.
+
+With $B$ simulated null hypothesis datasets, this notebook reports
+
+$$
+\frac{\#\{\text{null hypothesis statistic} \ge \text{observed statistic}\}}{B}.
+$$
+
+Under this convention, the observed dataset is not counted as one of the simulated null hypothesis datasets. A reported value of $0$ means that none of the $B$ simulated null hypothesis worlds was at least as extreme as the observed one; with $B=5000$, for example, the simulation resolution is $1/5000$.
+
+The code below produces a table of global classical p-values. Each row corresponds to one null hypothesis and one aggregate test statistic, and the final column gives the empirical right-tail p-value for the observed statistic.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:13:11.196716Z', iopub.status.busy: '2026-06-07T15:13:11.196619Z', iopub.status.idle: '2026-06-07T15:13:11.206713Z', shell.execute_reply: '2026-06-07T15:13:11.206530Z'}
+def benjamini_hochberg(p_values: pd.Series) -> pd.Series:
+    """Compute Benjamini-Hochberg adjusted q-values.
+
+    Args:
+        p_values: Raw p-values from a family of tests.
+
+    Returns:
+        Adjusted q-values in the original order.
+    """
+    p = p_values.to_numpy(dtype=float)
+    q = np.full_like(p, np.nan)
+    valid = np.isfinite(p)
+    valid_indices = np.where(valid)[0]
+    if len(valid_indices) == 0:
+        return pd.Series(q, index=p_values.index)
+    order = valid_indices[np.argsort(p[valid])]
+    ranked_p = p[order]
+    m = len(ranked_p)
+    adjusted = ranked_p * m / np.arange(1, m + 1)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    q[order] = np.minimum(adjusted, 1.0)
+    return pd.Series(q, index=p_values.index)
+
+
+def add_bh_by_family(df: pd.DataFrame, p_col: str, family_cols: list[str], out_col: str) -> pd.DataFrame:
+    """Add Benjamini-Hochberg q-values within grouped test families.
+
+    Args:
+        df: Dataframe containing p-values.
+        p_col: Name of the p-value column.
+        family_cols: Columns that define a multiple-testing family.
+        out_col: Name of the q-value column to add.
+
+    Returns:
+        Copy of ``df`` with the q-value column added.
+    """
+    out = df.copy()
+    out[out_col] = np.nan
+    for _, idx in out.groupby(family_cols).groups.items():
+        out.loc[idx, out_col] = benjamini_hochberg(out.loc[idx, p_col]).to_numpy()
+    return out
+
+
+pvalue_rows = []
+for null_name, obs_stats in observed_aggregates.items():
+    null_df = null_all[null_all["null"] == null_name]
+    for stat_name, observed in obs_stats.items():
+        null_values = null_df[stat_name].to_numpy(dtype=float)
+        pvalue_rows.append(
+            {
+                "null": null_name,
+                "statistic": stat_name,
+                "observed": float(observed),
+                "null_mean": float(null_values.mean()),
+                "null_sd": float(null_values.std(ddof=1)),
+                "z": float((observed - null_values.mean()) / null_values.std(ddof=1)),
+                "empirical_p_greater": empirical_pvalue_greater(null_values, observed),
+            }
+        )
+
+pvalues = pd.DataFrame(pvalue_rows).sort_values(["null", "statistic"]).reset_index(drop=True)
+if CONFIG.save_outputs:
+    pvalues.to_csv(UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_pvalues.csv", index=False)
+pvalues
+```
+
+The global classical tests give a clear result. Every p-value in the table is below $0.05$, so the global classical summaries reject both Null Hypothesis 1 and Null Hypothesis 2. In words, the observed spatial allocation of deaths is not consistent with equal probability by county, and it is not consistent with equal per-capita risk across counties.
+
+## Monthwise Classical Tests for Null Hypotheses 1 and 2
+
+The global tests above aggregate evidence over all months. We can also test Null Hypothesis 1 and Null Hypothesis 2 month by month by comparing the observed monthly goodness-of-fit statistics with their simulated monthly null hypothesis distributions.
+
+The monthwise results are useful diagnostically, but they create a multiple-testing problem because each null hypothesis-statistic pair is tested in 213 different months. The table below reports raw empirical p-values and Benjamini-Hochberg q-values within each null hypothesis-statistic family. We keep the global tests as the primary summary and treat the monthwise table as a way to locate where the departures from the null hypothesis are most visible.
+
+The code below produces a summary table rather than the full month-by-month table. For each null hypothesis and each classical statistic, it reports how many months were tested, the smallest monthly p-value, how many months had raw p-values below $0.05$, and how many remained below $0.05$ after the Benjamini-Hochberg adjustment.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:13:11.207746Z', iopub.status.busy: '2026-06-07T15:13:11.207689Z', iopub.status.idle: '2026-06-07T15:14:00.420077Z', shell.execute_reply: '2026-06-07T15:14:00.419708Z'}
+MONTHWISE_CLASSICAL_B = CONFIG.B
+MONTHWISE_CLASSICAL_STATS = [
+    "pearson_chi2",
+    "g_test",
+    "total_variation",
+    "max_abs_standardized_residual",
+    "rate_variance",
+]
+
+
+def monthwise_classical_null_pvalues(
+    prob_matrix: np.ndarray,
+    null_name: str,
+    observed_monthly: pd.DataFrame,
+    rng: np.random.Generator,
+    b: int = MONTHWISE_CLASSICAL_B,
+) -> pd.DataFrame:
+    """Compute monthwise Monte Carlo p-values for a multinomial null hypothesis model.
+
+    Args:
+        prob_matrix: County probabilities for each month.
+        null_name: Name of the null hypothesis.
+        observed_monthly: Observed monthly goodness-of-fit table for this null hypothesis.
+        rng: Random number generator.
+        b: Number of simulated null hypothesis datasets.
+
+    Returns:
+        Monthwise p-values for each statistic.
+    """
+    n_months = len(month_labels)
+    exceed = {stat: np.zeros(n_months, dtype=int) for stat in MONTHWISE_CLASSICAL_STATS}
+    null_sum = {stat: np.zeros(n_months, dtype=float) for stat in MONTHWISE_CLASSICAL_STATS}
+    observed_arrays = {stat: observed_monthly[stat].to_numpy(dtype=float) for stat in MONTHWISE_CLASSICAL_STATS}
+    for _ in range(b):
+        sim = simulate_counts_under_null(rng, prob_matrix)
+        monthly = monthly_gof_stats(sim, prob_matrix)
+        for stat in MONTHWISE_CLASSICAL_STATS:
+            values = monthly[stat].to_numpy(dtype=float)
+            exceed[stat] += values >= observed_arrays[stat]
+            null_sum[stat] += values
+    rows = []
+    for _, observed_row in observed_monthly.iterrows():
+        year, month = parse_month_label(observed_row["month_label"])
+        month_index = int(observed_row["month_index"])
+        for stat in MONTHWISE_CLASSICAL_STATS:
+            n_geq = int(exceed[stat][month_index])
+            rows.append(
+                {
+                    "null": null_name,
+                    "statistic": stat,
+                    "month_index": month_index,
+                    "month_label": observed_row["month_label"],
+                    "year": year,
+                    "month": month,
+                    "observed": float(observed_row[stat]),
+                    "null_mean": float(null_sum[stat][month_index] / b),
+                    "n_null_geq_observed": n_geq,
+                    "B": b,
+                    "empirical_p_greater": float(n_geq / b),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+rng_monthwise = np.random.default_rng(CONFIG.seed + 111)
+monthwise_classical_pvalues = pd.concat(
+    [
+        monthwise_classical_null_pvalues(raw_uniform_probs, "raw_equal_county", observed_monthly_raw, rng_monthwise),
+        monthwise_classical_null_pvalues(
+            per_capita_uniform_probs,
+            "per_capita_population_weighted",
+            observed_monthly_per_capita,
+            rng_monthwise,
+        ),
+    ],
+    ignore_index=True,
+)
+monthwise_classical_pvalues = add_bh_by_family(
+    monthwise_classical_pvalues,
+    "empirical_p_greater",
+    ["null", "statistic"],
+    "bh_q_within_null_statistic",
+)
+monthwise_classical_pvalues["bh_q_all_hypotheses_1_2_monthwise"] = benjamini_hochberg(
+    monthwise_classical_pvalues["empirical_p_greater"]
+)
+if CONFIG.save_outputs:
+    monthwise_classical_pvalues.to_csv(UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_monthwise_pvalues.csv", index=False)
+
+monthwise_classical_summary = (
+    monthwise_classical_pvalues.groupby(["null", "statistic"], as_index=False)
+    .agg(
+        months_tested=("month_label", "count"),
+        min_p=("empirical_p_greater", "min"),
+        months_raw_p_lt_0_05=("empirical_p_greater", lambda s: int((s < 0.05).sum())),
+        months_bh_q_lt_0_05=("bh_q_within_null_statistic", lambda s: int((s < 0.05).sum())),
+    )
+    .sort_values(["null", "statistic"])
+)
+```
+
+We now display the table:
+```{python}
+#| eval: false
+monthwise_classical_summary
+```
+
+This table shows that the raw equal-county null hypothesis was rejected in every month. Meanwhile, the per-capita null hypothesis was rejected in most months. We also see that different test statistics had different power for rejecting the null hypothesis.
+
+## Spatial Autocorrelation Check via Moran's I
+
+The goodness-of-fit statistics above ignore the county adjacency graph. In this section, we are interested in spatial autocorrelation, i.e., the degree to which nearby spatial units have similar values (or in our case, whether neighboring counties tend to have similar overdose death rates). We test this using a test statistic known as Moran's I, invented in the 1950's. It has been used across geography, epidemiology, urban planning, environmental studies, and related fields; see [6] for Moran's I and related spatial autocorrelation methods.
+
+There are several possible null hypothesis models for Moran's I. One common model treats the observed values as independent draws from a common distribution. Another, which is the one used here, fixes the observed county rates in a given month and randomly assigns those rates to the Ohio counties. This random-assignment null hypothesis is a permutation test: it preserves the empirical distribution of county rates while asking whether their actual spatial arrangement is more autocorrelated than a random arrangement on the same adjacency graph.
+
+For one fixed month, let $R_i$ be the deaths per capita in county $i$, let $\bar R$ be the average of those county rates, and let $w_{ij}$ record whether counties $i$ and $j$ are adjacent. Moran's I is
+
+$$
+I =
+\frac{n}{S_0}\;
+\frac{\sum_i \sum_j w_{ij}(R_i-\bar R)(R_j-\bar R)}
+{\sum_i (R_i-\bar R)^2},
+\quad
+S_0 = \sum_i \sum_j w_{ij}.
+$$
+
+Large positive values mean that counties with above-average rates tend to border other counties with above-average rates, and counties with below-average rates tend to border other counties with below-average rates. Values near zero mean that the map does not show much linear spatial autocorrelation according to the chosen adjacency graph. Negative values mean that neighboring counties tend to be more different than expected.
+
+Here we compute Moran's I using monthly deaths per capita and the Ohio county adjacency file. For each month, the distribution under the null hypothesis is generated by randomly permuting the county rates over the fixed county adjacency graph. This preserves the set of county rates in that month but removes the spatial arrangement of those rates. The monthwise p-value is the proportion of permutations whose Moran's I is at least as large as the observed Moran's I.
+
+Because this gives one p-value per month, we report the Benjamini-Hochberg q-values described above for the resulting family of month-by-month tests. We also compute global spatial-autocorrelation tests by aggregating Moran's I over all months. In each global null hypothesis replicate, the county rates are permuted independently within every month, and then the aggregate Moran's I statistic is recomputed.
+
+The code below produces three tables. The first gives global Moran's I p-values for aggregate statistics over all months. The second summarizes the month-by-month Moran's I analysis. The third lists the months with the largest observed Moran's I values.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:14:00.423663Z', iopub.status.busy: '2026-06-07T15:14:00.423553Z', iopub.status.idle: '2026-06-07T15:14:31.489054Z', shell.execute_reply: '2026-06-07T15:14:31.488707Z'}
+MORAN_B = 1000
+MORAN_OUTPUT = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_monthly_morans_i.csv"
+MORAN_GLOBAL_OUTPUT = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_global_morans_i.csv"
+
+
+def load_ohio_adjacency_edges(path: Path, counties: list[str]) -> list[tuple[str, str]]:
+    """Load undirected Ohio county adjacency edges.
+
+    Args:
+        path: Tab-delimited adjacency file. The first entry in each row is a county,
+            and later entries are neighboring counties or the special value
+            ``"exterior"``.
+        counties: County names used by the overdose data.
+
+    Returns:
+        Sorted undirected county-neighbor pairs whose endpoints both appear in
+        ``counties``.
+    """
+    county_key_to_name = {normalize_county_key(county): county for county in counties}
+    edges = set()
+    with open(path) as adjacency_file:
+        for line in adjacency_file:
+            parts = [part.strip() for part in line.split("\t") if part.strip()]
+            if not parts:
+                continue
+            county_a = county_key_to_name.get(normalize_county_key(parts[0]))
+            if county_a is None:
+                continue
+            for neighbor in parts[1:]:
+                if neighbor.lower() == "exterior":
+                    continue
+                county_b = county_key_to_name.get(normalize_county_key(neighbor.split(":")[-1]))
+                if county_b is not None and county_a != county_b:
+                    edges.add(tuple(sorted((county_a, county_b))))
+    return sorted(edges)
+
+
+def morans_i(values: pd.Series, edges: list[tuple[str, str]]) -> float:
+    """Compute global Moran's I using binary adjacency weights.
+
+    Args:
+        values: County-indexed scalar field.
+        edges: Undirected adjacency pairs.
+
+    Returns:
+        Moran's I. Positive values indicate that neighboring counties tend to
+        have similar values; negative values indicate neighboring counties tend
+        to be dissimilar.
+    """
+    county_to_index = {county: i for i, county in enumerate(values.index)}
+    x = values.to_numpy(dtype=float)
+    centered = x - x.mean()
+    denominator = float(np.sum(centered**2))
+    if denominator <= 0 or not edges:
+        return np.nan
+    numerator = 0.0 
+    weight_sum = 0
+    for county_a, county_b in edges:
+        if county_a in county_to_index and county_b in county_to_index:
+            i = county_to_index[county_a]
+            j = county_to_index[county_b]
+            numerator += centered[i] * centered[j]
+            numerator += centered[j] * centered[i]
+            weight_sum += 2
+    if weight_sum == 0:
+        return np.nan
+    return float((len(x) / weight_sum) * (numerator / denominator))
+
+
+
+def aggregate_morans_i_statistics(monthly_i: np.ndarray) -> dict[str, float]:
+    """Aggregate monthly Moran's I values into global statistics.
+
+    Args:
+        monthly_i: Array of monthly Moran's I values.
+
+    Returns:
+        Dictionary of aggregate spatial-autocorrelation summaries.
+    """
+    monthly_i = np.asarray(monthly_i, dtype=float)
+    return {
+        "mean_morans_i": float(np.nanmean(monthly_i)),
+        "max_morans_i": float(np.nanmax(monthly_i)),
+        "sum_positive_morans_i": float(np.nansum(np.maximum(monthly_i, 0.0))),
+    }
+
+
+def global_morans_i_permutation_pvalues(
+    rates: pd.DataFrame,
+    edges: list[tuple[str, str]],
+    observed_monthly_i: np.ndarray,
+    rng: np.random.Generator,
+    b: int = MORAN_B,
+) -> pd.DataFrame:
+    """Estimate global right-tail Moran's I p-values over all months.
+
+    Args:
+        rates: County-by-month deaths-per-capita table.
+        edges: Undirected county adjacency pairs.
+        observed_monthly_i: Observed monthly Moran's I values.
+        rng: Random number generator.
+        b: Number of global null hypothesis replicates.
+
+    Returns:
+        Dataframe of global Moran's I p-values.
+    """
+    observed_global = aggregate_morans_i_statistics(observed_monthly_i)
+    null_values = {stat: np.empty(b, dtype=float) for stat in observed_global}
+    for replicate in range(b):
+        replicate_i = []
+        for label in month_labels:
+            values = rates[label]
+            permuted = pd.Series(rng.permutation(values.to_numpy(dtype=float)), index=values.index)
+            replicate_i.append(morans_i(permuted, edges))
+        replicate_global = aggregate_morans_i_statistics(np.asarray(replicate_i, dtype=float))
+        for stat in observed_global:
+            null_values[stat][replicate] = replicate_global[stat]
+    rows = []
+    for stat, observed in observed_global.items():
+        values = null_values[stat]
+        n_geq = int(np.sum(values >= observed))
+        rows.append(
+            {
+                "statistic": stat,
+                "observed": observed,
+                "null_mean": float(values.mean()),
+                "null_sd": float(values.std(ddof=1)),
+                "n_null_geq_observed": n_geq,
+                "B": b,
+                "empirical_p_greater": float(n_geq / b),
+            }
+        )
+    return pd.DataFrame(rows)
+
+def morans_i_permutation_pvalue(
+    values: pd.Series,
+    edges: list[tuple[str, str]],
+    rng: np.random.Generator,
+    b: int = MORAN_B,
+) -> tuple[float, np.ndarray]:
+    """Estimate a right-tail permutation p-value for Moran's I.
+
+    Args:
+        values: County-indexed scalar field.
+        edges: Undirected adjacency pairs.
+        rng: Random number generator.
+        b: Number of random permutations.
+
+    Returns:
+        Pair containing the raw empirical right-tail p-value and the simulated
+        Moran's I values simulated under the null hypothesis.
+    """
+    observed = morans_i(values, edges)
+    null_values = np.empty(b, dtype=float)
+    observed_array = values.to_numpy(dtype=float)
+    for replicate in range(b):
+        permuted = pd.Series(rng.permutation(observed_array), index=values.index)
+        null_values[replicate] = morans_i(permuted, edges)
+    p_value = float(np.mean(null_values >= observed))
+    return p_value, null_values
+
+
+def benjamini_hochberg(p_values: pd.Series) -> pd.Series:
+    """Compute Benjamini-Hochberg adjusted q-values.
+
+    Args:
+        p_values: Raw p-values from a family of tests.
+
+    Returns:
+        Adjusted q-values in the original order.
+    """
+    p = p_values.to_numpy(dtype=float)
+    q = np.full_like(p, np.nan)
+    valid = np.isfinite(p)
+    valid_indices = np.where(valid)[0]
+    if len(valid_indices) == 0:
+        return pd.Series(q, index=p_values.index)
+    order = valid_indices[np.argsort(p[valid])]
+    ranked_p = p[order]
+    m = len(ranked_p)
+    adjusted = ranked_p * m / np.arange(1, m + 1)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    q[order] = np.minimum(adjusted, 1.0)
+    return pd.Series(q, index=p_values.index)
+
+
+adjacency_edges = load_ohio_adjacency_edges(ADJ_PATH, county_names)
+monthly_rates = counts_df.astype(float) / pop_df
+rng_moran = np.random.default_rng(CONFIG.seed + 2024)
+
+moran_rows = []
+for month_index, label in enumerate(month_labels):
+    values = monthly_rates[label]
+    observed_i = morans_i(values, adjacency_edges)
+    p_value, _ = morans_i_permutation_pvalue(values, adjacency_edges, rng_moran)
+    year, month = parse_month_label(label)
+    moran_rows.append(
+        {
+            "month_index": month_index,
+            "month_label": label,
+            "year": year,
+            "month": month,
+            "morans_i": observed_i,
+            "permutation_p_greater_raw": p_value,
+        }
+    )
+
+moran_results = pd.DataFrame(moran_rows)
+moran_results["bh_q_value"] = benjamini_hochberg(moran_results["permutation_p_greater_raw"])
+moran_global_pvalues = global_morans_i_permutation_pvalues(
+    monthly_rates,
+    adjacency_edges,
+    moran_results["morans_i"].to_numpy(dtype=float),
+    rng_moran,
+    MORAN_B,
+)
+if CONFIG.save_outputs:
+    moran_results.to_csv(MORAN_OUTPUT, index=False)
+    moran_global_pvalues.to_csv(MORAN_GLOBAL_OUTPUT, index=False)
+
+moran_summary = pd.DataFrame(
+    {
+        "quantity": [
+            "months tested",
+            "adjacency edges",
+            "permutations per month",
+            "months with raw p < 0.05",
+            "months with BH q < 0.05",
+            "largest observed Moran's I",
+        ],
+        "value": [
+            len(moran_results),
+            len(adjacency_edges),
+            MORAN_B,
+            int((moran_results["permutation_p_greater_raw"] < 0.05).sum()),
+            int((moran_results["bh_q_value"] < 0.05).sum()),
+            float(moran_results["morans_i"].max()),
+        ],
+    }
+)
+
+display(moran_global_pvalues)
+display(moran_summary)
+moran_results.sort_values("morans_i", ascending=False).head(10)
+```
+
+The Moran's I month-by-month table flags 60 months as having statistically significant positive spatial autocorrelation before the Benjamini-Hochberg adjustment, and 23 months remain significant after that adjustment. The global Moran's I table is even stronger: the mean Moran's I, maximum Moran's I, and sum of positive Moran's I values are all significant at the current resolution of 1,000 global permutations. In other words, positive spatial autocorrelation is not just a collection of isolated monthly findings; it is also visible after aggregating over the full study period.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:14:31.490690Z', iopub.status.busy: '2026-06-07T15:14:31.490585Z', iopub.status.idle: '2026-06-07T15:14:31.690731Z', shell.execute_reply: '2026-06-07T15:14:31.690455Z'}
+fig, ax = plt.subplots(figsize=(12, 4))
+
+dates = pd.to_datetime(
+    dict(year=moran_results["year"], month=moran_results["month"], day=1)
+)
+ax.plot(dates, moran_results["morans_i"], color="#28536b", lw=1.5)
+significant = moran_results["bh_q_value"] < 0.05
+ax.scatter(
+    dates[significant],
+    moran_results.loc[significant, "morans_i"],
+    color="#b83232",
+    s=24,
+    label="BH q < 0.05",
+    zorder=3,
+)
+ax.axhline(0, color="#666666", lw=1, alpha=0.6)
+ax.set_title("Monthly Moran's I for deaths per capita")
+ax.set_ylabel("Moran's I")
+ax.set_xlabel("Month")
+ax.grid(True, alpha=0.25)
+ax.legend()
+fig.tight_layout()
+plt.show()
+```
+
+The plot shows the observed Moran's I value for each month. Peaks correspond to months in which high-rate counties are especially near other high-rate counties, and low-rate counties are especially near other low-rate counties. The plot is useful for timing and visual diagnosis, but the p-values and Benjamini-Hochberg q-values in the table above are the formal month-by-month test results.
+
+Testing each month separately is not the same as modeling time. The vineyard analysis brings time into the picture more directly by tracking persistence features over months.
+
+## Visual Diagnostics
+
+The histograms below show selected null hypothesis distributions. Each histogram is built from many resampled null hypothesis worlds; each resampling contributes one simulated test-statistic value to the histogram. The red vertical line is the observed statistic. When the red line sits far in the right tail, the observed spatial allocation of deaths is more uneven than expected under that null hypothesis.
+
+The upper-left histogram tests Null Hypothesis 1 using the global Pearson chi-squared sum. The upper-right histogram tests Null Hypothesis 1 using the maximum monthly total variation statistic. The lower-left histogram tests Null Hypothesis 2 using the global Pearson chi-squared sum. The lower-right histogram tests Null Hypothesis 2 using the maximum monthly total variation statistic.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:14:31.692576Z', iopub.status.busy: '2026-06-07T15:14:31.692512Z', iopub.status.idle: '2026-06-07T15:14:31.934656Z', shell.execute_reply: '2026-06-07T15:14:31.934295Z'}
+fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+
+plot_specs = [
+    ("raw_equal_county", "pearson_chi2__sum"),
+    ("raw_equal_county", "total_variation__max"),
+    ("per_capita_population_weighted", "pearson_chi2__sum"),
+    ("per_capita_population_weighted", "total_variation__max"),
+]
+
+def add_histogram_with_observed(ax, null_name: str, stat_name: str) -> None:
+    """Plot a null hypothesis histogram without letting an extreme observation hide it.
+
+    Args:
+        ax: Matplotlib axes where the diagnostic should be drawn.
+        null_name: Name of the simulated null hypothesis model to plot.
+        stat_name: Statistic to compare with the observed data.
+    """
+    null_values = null_all.loc[null_all["null"] == null_name, stat_name].to_numpy(dtype=float)
+    observed = observed_aggregates[null_name][stat_name]
+    p = empirical_pvalue_greater(null_values, observed)
+
+    lower = float(np.min(null_values))
+    upper = float(np.max(null_values))
+    span = upper - lower
+    padding = 0.08 * span if span > 0 else 1.0
+
+    ax.hist(null_values, bins=40, color="#b8c7d9", edgecolor="white")
+    ax.set_xlim(lower - padding, upper + padding)
+
+    if lower - padding <= observed <= upper + padding:
+        ax.axvline(observed, color="#b83232", lw=2, label="observed")
+    else:
+        side = "right" if observed > upper else "left"
+        x_marker = upper if side == "right" else lower
+        ax.axvline(x_marker, color="#b83232", lw=2, linestyle="--", label="observed off scale")
+        ax.annotate(
+            f"observed = {observed:.3g}",
+            xy=(x_marker, 0.86),
+            xycoords=("data", "axes fraction"),
+            xytext=(-8 if side == "right" else 8, 0),
+            textcoords="offset points",
+            color="#b83232",
+            ha="right" if side == "right" else "left",
+            va="center",
+        )
+
+    ax.set_title(f"{null_name}\n{stat_name}, p={p:.4g}")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+
+
+for ax, (null_name, stat_name) in zip(axes.flat, plot_specs):
+    add_histogram_with_observed(ax, null_name, stat_name)
+
+fig.tight_layout()
+plt.show()
+```
+
+All four displayed visual diagnostics have empirical p-value $0$ at the current simulation resolution. In each panel, none of the simulated null hypothesis worlds produced a statistic as large as the observed statistic. These plots therefore visually reinforce the global classical conclusion: both Null Hypothesis 1 and Null Hypothesis 2 are rejected by these selected goodness-of-fit summaries.
+
+## TDA Versions for All Three Null Hypothesis Tests
+
+The tables below report TDA analogues of the classical p-values above. The important point is that the topological statistic must match the null hypothesis being tested. A TDA statistic is not just a statistic of a table; it is a statistic of a scalar field on a specified spatial complex or graph.
+
+For Null Hypothesis 1, the scalar field is raw monthly deaths by county. For Null Hypothesis 2, the scalar field is monthly deaths per capita. These two hypotheses use the same $H_1$ summaries as before because they ask whether spatial allocations produce unusually persistent loop-like structures on the Ohio county surface.
+
+For Null Hypothesis 3, we use a different TDA statistic: a TDA-spatial $H^0$ spatial-dependence test on the county adjacency graph. This is a better match to spatial autocorrelation because it asks whether high-rate counties form connected clusters more strongly than expected under random rearrangement of the same county rates.
+
+Exact $H_1$ recomputation is more expensive than the classical summaries, so the $H_1$ subsection uses 1,000 TDA null hypothesis replicates. This gives a finer simulation resolution than the earlier calibration run while still keeping the exact $H_1$ recomputation feasible. The TDA-spatial $H^0$ test is much faster and uses the same number of permutations as the Moran's I section.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:14:31.937399Z', iopub.status.busy: '2026-06-07T15:14:31.937280Z', iopub.status.idle: '2026-06-07T15:15:28.258355Z', shell.execute_reply: '2026-06-07T15:15:28.258105Z'}
+TDA_B = 1000
+TDA_STATS = ["max_h1_persistence", "total_h1_persistence"]
+TDA_OUTPUT_REPLICATES = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_tda_null_replicates.csv"
+TDA_OUTPUT_MONTHWISE = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_tda_monthwise_pvalues.csv"
+TDA_OUTPUT_GLOBAL = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_tda_global_pvalues.csv"
+
+
+def read_ohio_surface(adjacency_path: Path) -> PS:
+    """Read the Ohio polygonal surface while suppressing parser chatter.
+
+    Args:
+        adjacency_path: Path to the county adjacency file.
+
+    Returns:
+        Polygonal surface object used by the local vineyard code.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        return PS.read_adj(str(adjacency_path))
+
+
+def h1_summary_sublevel(ps: PS, county_order: list[str], values: np.ndarray) -> dict[str, float]:
+    """Compute two H1 summaries from a county scalar field.
+
+    Args:
+        ps: Ohio polygonal surface.
+        county_order: County order matching ``values``.
+        values: County scalar field.
+
+    Returns:
+        Dictionary with maximum and total finite H1 persistence.
+    """
+    region_values = {county: float(value) for county, value in zip(county_order, values)}
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = ps.sublevel_SC(region_values)
+    st.compute_persistence(homology_coeff_field=2, min_persistence=0.0)
+    intervals = np.asarray(st.persistence_intervals_in_dimension(1), dtype=float)
+    if intervals.size == 0:
+        return {"max_h1_persistence": 0.0, "total_h1_persistence": 0.0}
+    intervals = intervals[np.isfinite(intervals).all(axis=1)]
+    if intervals.size == 0:
+        return {"max_h1_persistence": 0.0, "total_h1_persistence": 0.0}
+    persistences = intervals[:, 1] - intervals[:, 0]
+    return {
+        "max_h1_persistence": float(persistences.max()),
+        "total_h1_persistence": float(persistences.sum()),
+    }
+
+
+def compute_observed_tda_summaries(
+    ps: PS,
+    county_order: list[str],
+    values: np.ndarray,
+    null_name: str,
+    scalar_field: str,
+) -> pd.DataFrame:
+    """Compute observed monthly TDA summaries for one scalar-field choice.
+
+    Args:
+        ps: Ohio polygonal surface.
+        county_order: County order matching rows of ``values``.
+        values: County-by-month scalar field.
+        null_name: Null hypothesis label for this scalar-field choice.
+        scalar_field: Description of the scalar field used for persistence.
+
+    Returns:
+        Dataframe of observed TDA summaries by month.
+    """
+    rows = []
+    for month_index, label in enumerate(month_labels):
+        year, month = parse_month_label(label)
+        rows.append(
+            {
+                "null": null_name,
+                "scalar_field": scalar_field,
+                "month_index": month_index,
+                "month_label": label,
+                "year": year,
+                "month": month,
+                **h1_summary_sublevel(ps, county_order, values[:, month_index]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_tda_null_replicates(
+    ps: PS,
+    county_order: list[str],
+    observed_rates: np.ndarray,
+    pop_matrix: np.ndarray,
+    rng: np.random.Generator,
+    b: int = TDA_B,
+) -> pd.DataFrame:
+    """Run TDA null hypothesis simulations for all three null hypotheses.
+
+    Args:
+        ps: Ohio polygonal surface.
+        county_order: County order matching rows of the matrices.
+        observed_rates: Observed county-by-month deaths per capita.
+        pop_matrix: County-by-month population.
+        rng: Random number generator.
+        b: Number of TDA null hypothesis replicates per null hypothesis.
+
+    Returns:
+        Long dataframe with one row per null hypothesis, replicate, and month.
+    """
+    rows = []
+    n_counties_tda = len(county_order)
+    n_months_tda = len(month_labels)
+    raw_uniform_probs_tda = np.full((n_counties_tda, n_months_tda), 1.0 / n_counties_tda)
+    per_capita_uniform_probs_tda = pop_matrix / pop_matrix.sum(axis=0, keepdims=True)
+
+    for replicate in range(1, b + 1):
+        sim_counts = simulate_counts_under_null(rng, raw_uniform_probs_tda)
+        for month_index, label in enumerate(month_labels):
+            rows.append(
+                {
+                    "null": "raw_equal_county",
+                    "scalar_field": "raw_deaths",
+                    "replicate": replicate,
+                    "month_index": month_index,
+                    "month_label": label,
+                    **h1_summary_sublevel(ps, county_order, sim_counts[:, month_index]),
+                }
+            )
+
+    for replicate in range(1, b + 1):
+        sim_counts = simulate_counts_under_null(rng, per_capita_uniform_probs_tda)
+        sim_rates = sim_counts / pop_matrix
+        for month_index, label in enumerate(month_labels):
+            rows.append(
+                {
+                    "null": "per_capita_population_weighted",
+                    "scalar_field": "deaths_per_capita",
+                    "replicate": replicate,
+                    "month_index": month_index,
+                    "month_label": label,
+                    **h1_summary_sublevel(ps, county_order, sim_rates[:, month_index]),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def tda_monthwise_pvalues(observed_tda: pd.DataFrame, null_tda: pd.DataFrame) -> pd.DataFrame:
+    """Compute monthwise TDA p-values and BH q-values.
+
+    Args:
+        observed_tda: Observed monthly TDA summaries.
+        null_tda: Null hypothesis replicate TDA summaries.
+
+    Returns:
+        Monthwise empirical p-values for the TDA summaries.
+    """
+    rows = []
+    for _, observed_row in observed_tda.iterrows():
+        null_name = observed_row["null"]
+        subset = null_tda[
+            (null_tda["null"] == null_name)
+            & (null_tda["month_index"] == observed_row["month_index"])
+        ]
+        for stat in TDA_STATS:
+            null_values = subset[stat].to_numpy(dtype=float)
+            observed = float(observed_row[stat])
+            n_geq = int(np.sum(null_values >= observed))
+            rows.append(
+                {
+                    "null": null_name,
+                    "scalar_field": observed_row["scalar_field"],
+                    "statistic": stat,
+                    "month_index": int(observed_row["month_index"]),
+                    "month_label": observed_row["month_label"],
+                    "year": int(observed_row["year"]),
+                    "month": int(observed_row["month"]),
+                    "observed": observed,
+                    "null_mean": float(null_values.mean()),
+                    "n_null_geq_observed": n_geq,
+                    "B": len(null_values),
+                    "empirical_p_greater": float(n_geq / len(null_values)),
+                }
+            )
+    out = pd.DataFrame(rows)
+    out = add_bh_by_family(out, "empirical_p_greater", ["null", "statistic"], "bh_q_within_null_statistic")
+    out["bh_q_all_tda_monthwise"] = benjamini_hochberg(out["empirical_p_greater"])
+    return out
+
+
+def tda_global_pvalues(observed_tda: pd.DataFrame, null_tda: pd.DataFrame) -> pd.DataFrame:
+    """Compute global TDA p-values aggregated over months.
+
+    Args:
+        observed_tda: Observed monthly TDA summaries.
+        null_tda: Null hypothesis replicate TDA summaries.
+
+    Returns:
+        Global empirical p-values for max and sum aggregations.
+    """
+    rows = []
+    for null_name, observed_df in observed_tda.groupby("null", sort=False):
+        observed_aggs = {}
+        for stat in TDA_STATS:
+            values = observed_df.sort_values("month_index")[stat].to_numpy(dtype=float)
+            observed_aggs[f"{stat}__max"] = float(values.max())
+            observed_aggs[f"{stat}__sum"] = float(values.sum())
+
+        null_df = null_tda[null_tda["null"] == null_name]
+        replicate_rows = []
+        for replicate, rep_df in null_df.groupby("replicate"):
+            row = {"replicate": replicate}
+            for stat in TDA_STATS:
+                values = rep_df.sort_values("month_index")[stat].to_numpy(dtype=float)
+                row[f"{stat}__max"] = float(values.max())
+                row[f"{stat}__sum"] = float(values.sum())
+            replicate_rows.append(row)
+        null_aggs = pd.DataFrame(replicate_rows)
+
+        scalar_field = observed_df["scalar_field"].iloc[0]
+        for stat_name, observed in observed_aggs.items():
+            null_values = null_aggs[stat_name].to_numpy(dtype=float)
+            n_geq = int(np.sum(null_values >= observed))
+            rows.append(
+                {
+                    "null": null_name,
+                    "scalar_field": scalar_field,
+                    "statistic": stat_name,
+                    "observed": observed,
+                    "null_mean": float(null_values.mean()),
+                    "null_sd": float(null_values.std(ddof=1)),
+                    "n_null_geq_observed": n_geq,
+                    "B": len(null_values),
+                    "empirical_p_greater": float(n_geq / len(null_values)),
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["null", "statistic"]).reset_index(drop=True)
+
+
+ohio_surface = read_ohio_surface(ADJ_PATH)
+tda_county_order = [county for county in ohio_surface.R.keys() if not county.startswith("exterior")]
+counts_tda = align_wide_county_table(counts_df, tda_county_order).loc[tda_county_order, month_labels].to_numpy(dtype=int)
+pop_tda = align_wide_county_table(pop_df, tda_county_order).loc[tda_county_order, month_labels].to_numpy(dtype=float)
+observed_rates_tda = counts_tda / pop_tda
+
+observed_tda = pd.concat(
+    [
+        compute_observed_tda_summaries(
+            ohio_surface,
+            tda_county_order,
+            counts_tda.astype(float),
+            "raw_equal_county",
+            "raw_deaths",
+        ),
+        compute_observed_tda_summaries(
+            ohio_surface,
+            tda_county_order,
+            observed_rates_tda,
+            "per_capita_population_weighted",
+            "deaths_per_capita",
+        ),
+    ],
+    ignore_index=True,
+)
+rng_tda = np.random.default_rng(CONFIG.seed + 3030)
+tda_null_replicates = run_tda_null_replicates(ohio_surface, tda_county_order, observed_rates_tda, pop_tda, rng_tda)
+tda_monthwise_pvalues = tda_monthwise_pvalues(observed_tda, tda_null_replicates)
+tda_global_pvalues = tda_global_pvalues(observed_tda, tda_null_replicates)
+
+if CONFIG.save_outputs:
+    observed_tda.to_csv(UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_observed_tda_summaries.csv", index=False)
+    tda_null_replicates.to_csv(TDA_OUTPUT_REPLICATES, index=False)
+    tda_monthwise_pvalues.to_csv(TDA_OUTPUT_MONTHWISE, index=False)
+    tda_global_pvalues.to_csv(TDA_OUTPUT_GLOBAL, index=False)
+
+tda_monthwise_summary = (
+    tda_monthwise_pvalues.groupby(["null", "scalar_field", "statistic"], as_index=False)
+    .agg(
+        months_tested=("month_label", "count"),
+        min_p=("empirical_p_greater", "min"),
+        months_raw_p_lt_0_05=("empirical_p_greater", lambda s: int((s < 0.05).sum())),
+        months_bh_q_lt_0_05=("bh_q_within_null_statistic", lambda s: int((s < 0.05).sum())),
+    )
+    .sort_values(["null", "statistic"])
+)
+
+print(f"Computed H1 TDA summaries for {len(tda_global_pvalues['null'].unique())} spatial-allocation null hypothesis models using {TDA_B} replicates each.")
+```
+
+### Null Hypothesis 1 TDA Results: Raw Equal-County Deaths
+
+Null Hypothesis 1 is a statement about raw county death counts: conditional on the statewide monthly total, each death is equally likely to fall in any county. The TDA scalar field for this subsection is therefore raw monthly deaths, not deaths per capita. The global table asks whether the observed raw-death fields have unusually persistent loop-like structures compared with raw-death fields generated under this equal-county allocation model.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:15:28.262716Z', iopub.status.busy: '2026-06-07T15:15:28.262598Z', iopub.status.idle: '2026-06-07T15:15:28.267756Z', shell.execute_reply: '2026-06-07T15:15:28.267549Z'}
+display(tda_global_pvalues[tda_global_pvalues["null"] == "raw_equal_county"])
+tda_monthwise_summary[tda_monthwise_summary["null"] == "raw_equal_county"]
+```
+
+For Null Hypothesis 1, all four global TDA p-values are $0$ at the current TDA simulation resolution. The month-by-month summary also shows that nearly every month remains significant after the Benjamini-Hochberg adjustment. Thus, once the TDA scalar field is correctly changed to raw deaths, the TDA summaries strongly reject the raw equal-county null hypothesis.
+
+### Null Hypothesis 2 TDA Results: Population-Weighted Per-Capita Risk
+
+Null Hypothesis 2 is a statement about equal overdose risk per person: conditional on the statewide monthly total, deaths are allocated to counties with probabilities proportional to county population. The TDA scalar field for this subsection is deaths per capita. This asks whether the observed rate fields contain stronger or more persistent loop-like structures than would typically appear if every Ohio resident had the same death risk in each month.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:15:28.268818Z', iopub.status.busy: '2026-06-07T15:15:28.268757Z', iopub.status.idle: '2026-06-07T15:15:28.272968Z', shell.execute_reply: '2026-06-07T15:15:28.272760Z'}
+display(tda_global_pvalues[tda_global_pvalues["null"] == "per_capita_population_weighted"])
+tda_monthwise_summary[tda_monthwise_summary["null"] == "per_capita_population_weighted"]
+```
+
+For Null Hypothesis 2, the global TDA summaries also reject the population-weighted per-capita null hypothesis. Three of the four global p-values are $0$, and the remaining global p-value is small at the current simulation resolution. The month-by-month results are weaker after multiple-testing adjustment, which is a reminder that global aggregation and monthwise screening answer related but different questions. For the `max_h1_persistence` statistic, the four months with the strongest evidence of non-uniformity are `2007_12`, `2012_11`, `2015_12`, and `2022_8`.
+
+Inspecting the death regions for these four maximum $H_1$ classes gives a simple check of our test statistic: in each case, the death region is the county with the highest deaths per capita in the input data for that month. The death regions are Adams in `2007_12`, Henry in `2012_11`, Fayette in `2015_12`, and Vinton in `2022_8`. Thus, for these four months, the `max_h1_persistence` statistic is picking up the same county-level extremum that we would identify by directly sorting deaths per capita.
+
+### Null Hypothesis 3 TDA Results: TDA-Spatial $H^0$ Spatial Dependence
+
+The point of adding a TDA-spatial test is that persistence-based spatial tests can see patterns that Moran's I may miss. Byers et al. [3] found examples involving border-like structures and adjacent outliers, while Limbeck and Rieck [13] found that persistence-based spatial-dependence tests can be more robust to zero inflation and can capture information partly orthogonal to Moran's I and related methods. This is relevant for overdose data because county-month death counts can have many zeros and can also contain local outliers, especially in smaller counties or in months with sharply localized outbreaks.
+
+Null Hypothesis 3 fixes the set of county death rates observed in a month and randomly permutes those rates over the Ohio county graph. The $H_1$ loop summaries used for the spatial-allocation hypotheses are a poor match for this hypothesis, because some of them are almost unchanged by permutation. Motivated by [3], we instead compute $H^0$ persistence for the county adjacency graph after filtering downward, so that high-rate counties enter first and connected components represent clusters of high values.
+
+The TDA-spatial statistic is total lifespan, abbreviated `total_lifespan` below. In the downward filtration, a smaller total lifespan means that high-rate counties merge into connected components earlier than they typically would after random permutation. Thus the TDA-spatial test uses a left-tail p-value: it asks whether the observed total lifespan is unusually small compared with the permutation distribution.
+
+The code below produces two tables. The first gives global TDA-spatial p-values for aggregate total-lifespan statistics over all months. The second summarizes the month-by-month TDA-spatial tests for Null Hypothesis 3.
+
+```{python}
+#| eval: false
+#| execution: {iopub.execute_input: '2026-06-07T15:15:28.274174Z', iopub.status.busy: '2026-06-07T15:15:28.274104Z', iopub.status.idle: '2026-06-07T15:16:50.657219Z', shell.execute_reply: '2026-06-07T15:16:50.656833Z'}
+TDA_SPATIAL_B = MORAN_B if "MORAN_B" in globals() else 999
+TDA_SPATIAL_MONTHWISE_OUTPUT = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_tda_spatial_h0_monthwise.csv"
+TDA_SPATIAL_GLOBAL_OUTPUT = UNIFORMITY_DIR / "uniform_testing_outputs" / "uniform_testing_tda_spatial_h0_global.csv"
+
+
+def graph_h0_persistence_statistics_filter_down(
+    values: np.ndarray,
+    edges: list[tuple[int, int]],
+) -> dict[str, float]:
+    """Compute TDA-spatial H0 persistence statistics on a weighted graph.
+
+    Args:
+        values: Vertex values on the original scale. Larger values are treated
+            as peaks by filtering downward.
+        edges: Undirected graph edges as integer vertex-index pairs.
+
+    Returns:
+        Total lifespan and the number of bounded H0 pairs.
+    """
+    values = np.asarray(values, dtype=float)
+    if len(values) == 0:
+        return {"total_lifespan": 0.0, "n_h0_pairs": 0}
+
+    filtration_values = float(np.nanmax(values)) - values
+    max_filtration = float(np.nanmax(filtration_values))
+    adjacency = [[] for _ in range(len(values))]
+    for i, j in edges:
+        adjacency[i].append(j)
+        adjacency[j].append(i)
+
+    parent = np.full(len(values), -1, dtype=int)
+    birth = np.full(len(values), np.nan, dtype=float)
+    active = np.zeros(len(values), dtype=bool)
+    lifespans = []
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int, death: float) -> None:
+        root_i = find(i)
+        root_j = find(j)
+        if root_i == root_j:
+            return
+        if (birth[root_i], root_i) <= (birth[root_j], root_j):
+            survivor, dying = root_i, root_j
+        else:
+            survivor, dying = root_j, root_i
+        lifespans.append(float(death - birth[dying]))
+        parent[dying] = survivor
+
+    order = sorted(range(len(values)), key=lambda idx: (filtration_values[idx], idx))
+    for idx in order:
+        active[idx] = True
+        parent[idx] = idx
+        birth[idx] = filtration_values[idx]
+        for neighbor in adjacency[idx]:
+            if active[neighbor]:
+                union(idx, neighbor, float(filtration_values[idx]))
+
+    roots = {find(i) for i in range(len(values)) if active[i]}
+    for root in roots:
+        lifespans.append(float(max_filtration - birth[root]))
+
+    lifespans_array = np.asarray(lifespans, dtype=float)
+    return {
+        "total_lifespan": float(lifespans_array.sum()),
+        "n_h0_pairs": int(len(lifespans_array)),
+    }
+
+
+def tda_spatial_h0_monthwise_tests(
+    rates: pd.DataFrame,
+    edges: list[tuple[str, str]],
+    rng: np.random.Generator,
+    b: int = TDA_SPATIAL_B,
+) -> pd.DataFrame:
+    """Run left-tail TDA-spatial H0 permutation tests for monthly county rates.
+
+    Args:
+        rates: County-by-month deaths-per-capita table.
+        edges: Undirected county adjacency pairs.
+        rng: Random number generator.
+        b: Number of permutations per month.
+
+    Returns:
+        Monthwise observed total-lifespan statistics and empirical p-values.
+    """
+    county_order = list(rates.index)
+    county_to_index = {county: idx for idx, county in enumerate(county_order)}
+    indexed_edges = [(county_to_index[a], county_to_index[b]) for a, b in edges]
+    rows = []
+    for month_index, label in enumerate(month_labels):
+        values = rates[label].to_numpy(dtype=float)
+        observed_stats = graph_h0_persistence_statistics_filter_down(values, indexed_edges)
+        observed = float(observed_stats["total_lifespan"])
+        null_values = np.empty(b, dtype=float)
+        for replicate in range(b):
+            permuted_values = rng.permutation(values)
+            null_values[replicate] = graph_h0_persistence_statistics_filter_down(
+                permuted_values,
+                indexed_edges,
+            )["total_lifespan"]
+        n_left = int(np.sum(null_values <= observed))
+        year, month = parse_month_label(label)
+        rows.append(
+            {
+                "null": "spatially_exchangeable_county_rates",
+                "method": "tda_spatial_h0_filter_down",
+                "statistic": "total_lifespan",
+                "p_value_tail": "left",
+                "month_index": month_index,
+                "month_label": label,
+                "year": year,
+                "month": month,
+                "observed": observed,
+                "null_mean": float(null_values.mean()),
+                "n_null_leq_observed": n_left,
+                "B": b,
+                "empirical_p_left": float(n_left / b),
+            }
+        )
+    out = pd.DataFrame(rows)
+    return out
+
+
+def aggregate_tda_spatial_statistics(monthly_total_lifespan: np.ndarray) -> dict[str, float]:
+    """Aggregate monthly total-lifespan values into global statistics.
+
+    Args:
+        monthly_total_lifespan: Monthly TDA-spatial total-lifespan values.
+
+    Returns:
+        Dictionary of global total-lifespan summaries.
+    """
+    monthly_total_lifespan = np.asarray(monthly_total_lifespan, dtype=float)
+    return {
+        "mean_total_lifespan": float(np.nanmean(monthly_total_lifespan)),
+        "sum_total_lifespan": float(np.nansum(monthly_total_lifespan)),
+    }
+
+
+def tda_spatial_h0_global_tests(
+    rates: pd.DataFrame,
+    edges: list[tuple[str, str]],
+    observed_monthwise: pd.DataFrame,
+    rng: np.random.Generator,
+    b: int = TDA_SPATIAL_B,
+) -> pd.DataFrame:
+    """Run global left-tail TDA-spatial H0 permutation tests.
+
+    Args:
+        rates: County-by-month deaths-per-capita table.
+        edges: Undirected county adjacency pairs.
+        observed_monthwise: Monthwise TDA-spatial test table.
+        rng: Random number generator.
+        b: Number of global null hypothesis replicates.
+
+    Returns:
+        Global total-lifespan p-values.
+    """
+    county_order = list(rates.index)
+    county_to_index = {county: idx for idx, county in enumerate(county_order)}
+    indexed_edges = [(county_to_index[a], county_to_index[b]) for a, b in edges]
+    observed_global = aggregate_tda_spatial_statistics(observed_monthwise["observed"].to_numpy(dtype=float))
+    null_values = {stat: np.empty(b, dtype=float) for stat in observed_global}
+    for replicate in range(b):
+        replicate_values = []
+        for label in month_labels:
+            values = rates[label].to_numpy(dtype=float)
+            permuted_values = rng.permutation(values)
+            replicate_values.append(
+                graph_h0_persistence_statistics_filter_down(permuted_values, indexed_edges)["total_lifespan"]
+            )
+        replicate_global = aggregate_tda_spatial_statistics(np.asarray(replicate_values, dtype=float))
+        for stat in observed_global:
+            null_values[stat][replicate] = replicate_global[stat]
+    rows = []
+    for stat, observed in observed_global.items():
+        values = null_values[stat]
+        n_left = int(np.sum(values <= observed))
+        rows.append(
+            {
+                "null": "spatially_exchangeable_county_rates",
+                "method": "tda_spatial_h0_filter_down",
+                "statistic": stat,
+                "p_value_tail": "left",
+                "observed": observed,
+                "null_mean": float(values.mean()),
+                "null_sd": float(values.std(ddof=1)),
+                "n_null_leq_observed": n_left,
+                "B": b,
+                "empirical_p_left": float(n_left / b),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+adjacency_edges_for_tda_spatial = adjacency_edges
+monthly_rates_for_tda_spatial = monthly_rates
+rng_tda_spatial_monthwise = np.random.default_rng(CONFIG.seed + 4040)
+tda_spatial_h0_results = tda_spatial_h0_monthwise_tests(
+    monthly_rates_for_tda_spatial,
+    adjacency_edges_for_tda_spatial,
+    rng_tda_spatial_monthwise,
+    TDA_SPATIAL_B,
+)
+rng_tda_spatial_global = np.random.default_rng(CONFIG.seed + 5050)
+tda_spatial_h0_global_pvalues = tda_spatial_h0_global_tests(
+    monthly_rates_for_tda_spatial,
+    adjacency_edges_for_tda_spatial,
+    tda_spatial_h0_results,
+    rng_tda_spatial_global,
+    TDA_SPATIAL_B,
+)
+if CONFIG.save_outputs:
+    tda_spatial_h0_results.to_csv(TDA_SPATIAL_MONTHWISE_OUTPUT, index=False)
+    tda_spatial_h0_global_pvalues.to_csv(TDA_SPATIAL_GLOBAL_OUTPUT, index=False)
+
+tda_spatial_h0_summary = pd.DataFrame(
+    {
+        "quantity": [
+            "months tested",
+            "permutations per month",
+            "months with raw p < 0.05",
+        ],
+        "value": [
+            len(tda_spatial_h0_results),
+            TDA_SPATIAL_B,
+            int((tda_spatial_h0_results["empirical_p_left"] < 0.05).sum()),
+        ],
+    }
+)
+
+display(tda_spatial_h0_global_pvalues)
+display(tda_spatial_h0_summary)
+```
+
+The TDA-spatial $H^0$ total-lifespan test gives strong evidence against Null Hypothesis 3. The global TDA-spatial table rejects spatial exchangeability for the mean and sum of monthly total lifespans, both with empirical p-value $0$ at the current simulation resolution. At the monthwise level, the `total_lifespan` test rejects 39 spatial-exchangeability null hypotheses before multiple-testing adjustment.
+
+This pattern is consistent with Byers et al. [3] and Limbeck and Rieck [13]. Both papers find that TDA-spatial tests tend to flag fewer cases than Moran's I, which suggests lower sensitivity at a fixed threshold, but that the cases flagged by TDA can be more specific to geometric or clustered spatial structure. In our results, Moran's I flags 60 months and the TDA-spatial test flags 39 months at raw p-value threshold $0.05$. The 39 TDA-spatial months are not a subset of the Moran's I months: the intersection has 24 months, so the TDA-spatial test flags 15 months that Moran's I does not flag.
+
+This kind of disagreement is also consistent with Limbeck and Rieck's conclusion that no single spatial-variability method is preferable in all scenarios. Here the disagreement suggests that Moran's I and the TDA-spatial total-lifespan statistic are measuring overlapping but different aspects of spatial structure. 
+
+This subsection uses $H^0$ persistence because that is the natural match for the spatial-dependence tests in [3] and [13]: high-rate counties enter as peaks, and the statistic summarizes how those peaks merge into connected components. The vineyard analysis later uses $H_1$ for a different reason. In the Ohio county surface, persistent $H_1$ classes can identify loop-like structures around high-rate regions, and their generators can be tracked over time to locate the counties involved in evolving hotspot geometry.
+
+
+## Displayed Result Tables
+
+The code above writes the result tables to disk; the cells below display the computed summaries used in the discussion.
+
+```{python}
+#| label: load-uniformity-results
+#| include: false
+from pathlib import Path
+import pandas as pd
+
+RESULT_DIR = Path.cwd()
+if RESULT_DIR.name != "uniformity files":
+    candidate = RESULT_DIR / "uniformity files"
+    if candidate.exists():
+        RESULT_DIR = candidate
+
+
+def read_result_csv(filename: str) -> pd.DataFrame:
+    """Read one result CSV from the uniformity results folder.
+
+    Args:
+        filename: Name of the CSV file.
+
+    Returns:
+        Dataframe loaded from the result file.
+    """
+    return pd.read_csv(RESULT_DIR / "uniform_testing_outputs" / filename)
+
+
+classical_global_results = read_result_csv("uniform_testing_pvalues.csv")
+classical_monthwise_results = read_result_csv("uniform_testing_monthwise_pvalues.csv")
+moran_global_results = read_result_csv("uniform_testing_global_morans_i.csv")
+moran_monthwise_results = read_result_csv("uniform_testing_monthly_morans_i.csv")
+tda_global_results = read_result_csv("uniform_testing_tda_global_pvalues.csv")
+tda_monthwise_results = read_result_csv("uniform_testing_tda_monthwise_pvalues.csv")
+tda_spatial_global_results = read_result_csv("uniform_testing_tda_spatial_h0_global.csv")
+tda_spatial_monthwise_results = read_result_csv("uniform_testing_tda_spatial_h0_monthwise.csv")
+
+classical_monthwise_summary_display = (
+    classical_monthwise_results.groupby(["null", "statistic"], as_index=False)
+    .agg(
+        months_tested=("month_label", "count"),
+        min_p=("empirical_p_greater", "min"),
+        months_raw_p_lt_0_05=("empirical_p_greater", lambda s: int((s < 0.05).sum())),
+        months_bh_q_lt_0_05=("bh_q_within_null_statistic", lambda s: int((s < 0.05).sum())),
+    )
+    .sort_values(["null", "statistic"])
+)
+
+tda_monthwise_summary_display = (
+    tda_monthwise_results.groupby(["null", "scalar_field", "statistic"], as_index=False)
+    .agg(
+        months_tested=("month_label", "count"),
+        min_p=("empirical_p_greater", "min"),
+        months_raw_p_lt_0_05=("empirical_p_greater", lambda s: int((s < 0.05).sum())),
+        months_bh_q_lt_0_05=("bh_q_within_null_statistic", lambda s: int((s < 0.05).sum())),
+    )
+    .sort_values(["null", "scalar_field", "statistic"])
+)
+
+moran_monthwise_summary_display = pd.DataFrame(
+    {
+        "quantity": [
+            "months tested",
+            "months with raw p < 0.05",
+            "months with BH q < 0.05",
+            "smallest raw p-value",
+            "largest observed Moran's I",
+        ],
+        "value": [
+            len(moran_monthwise_results),
+            int((moran_monthwise_results["permutation_p_greater_raw"] < 0.05).sum()),
+            int((moran_monthwise_results["bh_q_value"] < 0.05).sum()),
+            float(moran_monthwise_results["permutation_p_greater_raw"].min()),
+            float(moran_monthwise_results["morans_i"].max()),
+        ],
+    }
+)
+
+tda_spatial_monthwise_summary_display = pd.DataFrame(
+    {
+        "quantity": [
+            "months tested",
+            "months with left-tail p < 0.05",
+            "smallest left-tail p-value",
+            "largest observed total lifespan",
+            "smallest observed total lifespan",
+        ],
+        "value": [
+            len(tda_spatial_monthwise_results),
+            int((tda_spatial_monthwise_results["empirical_p_left"] < 0.05).sum()),
+            float(tda_spatial_monthwise_results["empirical_p_left"].min()),
+            float(tda_spatial_monthwise_results["observed"].max()),
+            float(tda_spatial_monthwise_results["observed"].min()),
+        ],
+    }
+)
+
+
+def sort_month_labels(labels: set[str]) -> list[str]:
+    """Sort month labels of the form YYYY_M chronologically.
+
+    Args:
+        labels: Set of month labels.
+
+    Returns:
+        Chronologically sorted list of month labels.
+    """
+    return sorted(labels, key=lambda label: tuple(map(int, label.split("_"))))
+
+
+h2_classical_monthwise_results = classical_monthwise_results[
+    classical_monthwise_results["null"] == "per_capita_population_weighted"
+]
+h2_classical_rejected_months = set(
+    h2_classical_monthwise_results.loc[
+        h2_classical_monthwise_results["empirical_p_greater"] < 0.05,
+        "month_label",
+    ]
+)
+h2_classical_rejected_months_bh = set(
+    h2_classical_monthwise_results.loc[
+        h2_classical_monthwise_results["bh_q_within_null_statistic"] < 0.05,
+        "month_label",
+    ]
+)
+h2_all_months = set(h2_classical_monthwise_results["month_label"])
+h2_classical_any_row = pd.DataFrame(
+    [
+        {
+            "null": "per_capita_population_weighted",
+            "statistic": "any_classical_test",
+            "months_tested": len(h2_all_months),
+            "min_p": float(h2_classical_monthwise_results["empirical_p_greater"].min()),
+            "months_raw_p_lt_0_05": len(h2_classical_rejected_months),
+            "months_bh_q_lt_0_05": len(h2_classical_rejected_months_bh),
+        }
+    ]
+)
+classical_monthwise_summary_display = pd.concat(
+    [classical_monthwise_summary_display, h2_classical_any_row],
+    ignore_index=True,
+)
+
+h2_tda_monthwise_results = tda_monthwise_results[
+    tda_monthwise_results["null"] == "per_capita_population_weighted"
+]
+h2_tda_rejected_months = set(
+    h2_tda_monthwise_results.loc[
+        h2_tda_monthwise_results["empirical_p_greater"] < 0.05,
+        "month_label",
+    ]
+)
+h2_tda_not_classical_months = sort_month_labels(h2_tda_rejected_months - h2_classical_rejected_months)
+h2_tda_not_classical_display = pd.DataFrame(
+    {
+        "quantity": [
+            "months rejected by at least one TDA test",
+            "of these, months not rejected by any classical test",
+            "months not rejected by any classical test",
+        ],
+        "value": [
+            len(h2_tda_rejected_months),
+            len(h2_tda_not_classical_months),
+            ", ".join(h2_tda_not_classical_months) if h2_tda_not_classical_months else "none",
+        ],
+    }
+)
+
+h3_classical_rejected_months = set(
+    moran_monthwise_results.loc[
+        moran_monthwise_results["permutation_p_greater_raw"] < 0.05,
+        "month_label",
+    ]
+)
+h3_tda_rejected_months = set(
+    tda_spatial_monthwise_results.loc[
+        tda_spatial_monthwise_results["empirical_p_left"] < 0.05,
+        "month_label",
+    ]
+)
+h3_tda_not_classical_months = sort_month_labels(h3_tda_rejected_months - h3_classical_rejected_months)
+h3_tda_not_classical_display = pd.DataFrame(
+    {
+        "quantity": [
+            "months rejected by the TDA-spatial test",
+            "of these, months not rejected by Moran's I",
+            "months not rejected by Moran's I",
+        ],
+        "value": [
+            len(h3_tda_rejected_months),
+            len(h3_tda_not_classical_months),
+            ", ".join(h3_tda_not_classical_months) if h3_tda_not_classical_months else "none",
+        ],
+    }
+)
+```
+
+The next table shows the global classical goodness-of-fit tests for Null Hypothesis 1. Each row is one aggregate statistic computed over all months, calibrated against the equal-county multinomial null hypothesis model. Note that all p-values are below 0.05, so the global Null Hypothesis 1 is rejected.
+
+```{python}
+#| label: table-h1-classical-global
+classical_global_results[classical_global_results["null"] == "raw_equal_county"]
+```
+
+The next table summarizes the month-by-month classical goodness-of-fit tests for Null Hypothesis 1. It reports the number of months tested, the smallest raw empirical p-value, and how many months were significant before and after the Benjamini-Hochberg adjustment. This says that 212 out of 213 months were found to reject Null Hypothesis 1. The bad month is the last one, because when the data were downloaded, it was still listing zero confirmed deaths (hence, no variability at all).
+
+```{python}
+#| label: table-h1-classical-monthwise
+classical_monthwise_summary_display[classical_monthwise_summary_display["null"] == "raw_equal_county"]
+```
+
+The next table shows the global classical goodness-of-fit tests for Null Hypothesis 2. These are the population-weighted multinomial tests for equal per-capita overdose risk. Note that all p-values are below 0.05, so the global Null Hypothesis 2 is rejected.
+
+```{python}
+#| label: table-h2-classical-global
+classical_global_results[classical_global_results["null"] == "per_capita_population_weighted"]
+```
+
+The next table summarizes the month-by-month classical goodness-of-fit tests for Null Hypothesis 2, using the same monthwise summary columns as above. Note that different tests reject different numbers of months (and, indeed, different sets of months). That's not unusual in statistics. Testing a null hypothesis with different tests is like looking at a problem from multiple angles or using multiple lenses. From some points of view it might look like the null hypothesis is true, but from others it's clearly false.
+
+```{python}
+#| label: table-h2-classical-monthwise
+classical_monthwise_summary_display[classical_monthwise_summary_display["null"] == "per_capita_population_weighted"]
+```
+
+The final row combines the classical tests. It asks how many months rejected Null Hypothesis 2 by at least one of the classical tests in the table. We see that 168 months are rejected by at least one test.
+
+The next table shows the global classical Moran's I tests for Null Hypothesis 3. These aggregate the monthly spatial-autocorrelation statistics over the full study period. Note that all p-values are below 0.05, so the global Null Hypothesis 3 is rejected.
+
+```{python}
+#| label: table-h3-classical-global
+moran_global_results
+```
+
+The next table summarizes the month-by-month Moran's I tests for Null Hypothesis 3. It reports how many months show positive spatial autocorrelation before and after the Benjamini-Hochberg adjustment.
+
+```{python}
+#| label: table-h3-classical-monthwise
+moran_monthwise_summary_display
+```
+
+The next table shows the global TDA $H_1$ tests for Null Hypothesis 1. The scalar field is raw monthly deaths, matching the raw equal-county null hypothesis model. Note that all p-values are below 0.05, so the global Null Hypothesis 1 is rejected by the TDA tests.
+
+```{python}
+#| label: table-h1-tda-global
+tda_global_results[tda_global_results["null"] == "raw_equal_county"]
+```
+
+The next table summarizes the month-by-month TDA $H_1$ tests for Null Hypothesis 1. Note that all p-values are below 0.05, so the monthly Null Hypotheses 1 are rejected by the TDA tests just as they were by the classical tests.
+
+```{python}
+#| label: table-h1-tda-monthwise
+tda_monthwise_summary_display[tda_monthwise_summary_display["null"] == "raw_equal_county"]
+```
+
+The next table shows the global TDA $H_1$ tests for Null Hypothesis 2. The scalar field is deaths per capita, matching the population-weighted equal-risk null hypothesis model. Note that all p-values are below 0.05, so the global Null Hypothesis 2 is rejected by the TDA tests.
+
+```{python}
+#| label: table-h2-tda-global
+tda_global_results[tda_global_results["null"] == "per_capita_population_weighted"]
+```
+
+The next table summarizes the month-by-month TDA $H_1$ tests for Null Hypothesis 2. Note that different tests reject different numbers of months (and different sets of months) just as with the classical tests. 
+
+```{python}
+#| label: table-h2-tda-monthwise
+tda_monthwise_summary_display[tda_monthwise_summary_display["null"] == "per_capita_population_weighted"]
+```
+
+The next table compares the months rejected by at least one TDA test with the months rejected by at least one classical test for Null Hypothesis 2.
+
+```{python}
+#| label: table-h2-tda-classical-comparison
+h2_tda_not_classical_display
+```
+
+Of the months above where the TDA tests rejected Null Hypothesis 2, 2 were not rejected by any of the classical tests. Those months are `2007_6` and `2008_10`. This shows that TDA can be useful to see things missed by classical tests.
+
+The next table shows the global TDA-spatial $H^0$ tests for Null Hypothesis 3. These are left-tail tests because unusually small total lifespan indicates stronger clustering of high-rate counties. Note that all p-values are below 0.05, so the global Null Hypothesis 3 is rejected by the TDA tests.
+
+```{python}
+#| label: table-h3-tda-global
+tda_spatial_global_results
+```
+
+The next table summarizes the month-by-month TDA-spatial $H^0$ tests for Null Hypothesis 3.
+
+```{python}
+#| label: table-h3-tda-monthwise
+tda_spatial_monthwise_summary_display
+```
+
+The next table compares the months rejected by the TDA-spatial test with the months rejected by Moran's I for Null Hypothesis 3.
+
+```{python}
+#| label: table-h3-tda-classical-comparison
+h3_tda_not_classical_display
+```
+
+Of the months above where the TDA-spatial test rejected Null Hypothesis 3, 15 were not rejected by Moran's I. This is another way to see that the TDA-spatial test is not just duplicating Moran's I.
+
+Large p-values should still be interpreted carefully. A large p-value does not prove that a null hypothesis is true; it may also indicate a Type II error, meaning that the particular TDA statistic is not powerful for the alternative being considered.
+
+
+## Conclusion
+
+The tests in this notebook reject all three spatial null hypotheses. The classical global goodness-of-fit tests reject Null Hypothesis 1 and Null Hypothesis 2, showing that monthly overdose deaths are not compatible with equal county allocation or population-weighted equal risk. Moran's I rejects Null Hypothesis 3 at both the global and monthwise levels, showing positive spatial autocorrelation in county death rates.
+
+The TDA tests reach the same broad conclusion from a different set of summaries. The $H_1$ persistence summaries reject the two spatial-allocation hypotheses, and the TDA-spatial $H^0$ total-lifespan test rejects spatial exchangeability globally and in 39 individual months before multiple-testing adjustment. These results support using topology as part of the null-hypothesis testing framework in addition to its role in visualization and vineyard tracking.
+
+As we have remarked above, some null hypotheses are more naturally tested with raw count summaries, while the TDA summaries are most directly interpretable for deaths-per-capita scalar fields on the Ohio county surface. What we have not yet done in this notebook is study how spatial autocorrelation itself changes over time. The next step in the vineyard analysis is temporal and spatiotemporal: after detecting spatial departures from these null hypothesis models, we ask whether the loop-like hotspot structures persist, move, merge, split, or disappear through time.
+
+## References
+
+[1] Agresti, A. (2013). *Categorical Data Analysis*. Wiley.
+
+[2] Benjamini, Y. and Hochberg, Y. (1995). "Controlling the false discovery rate: a practical and powerful approach to multiple testing." *Journal of the Royal Statistical Society: Series B*, 57(1), 289-300.
+
+[3] Byers, S., Pritchard, N., Turner, J., and Weighill, T. (2023). "Detecting spatial dependence with persistent homology." *Nonlinear Theory and Its Applications, IEICE*, 14(2), 106-125. https://doi.org/10.1587/nolta.14.106
+
+[4] Choi, J. I., Lee, J., Yeh, A. B., Lan, Q., and Kang, H. (2022). "Spatial clustering of heroin-related overdose incidents: a case study in Cincinnati, Ohio." *BMC Public Health*, 22(1), 1253.
+
+[5] Cipriani, P., Hirsch, C., and Vittorietti, M. (2023). "Topology-based goodness-of-fit tests for sliced spatial data." *Computational Statistics & Data Analysis*, 179, 107655. https://doi.org/10.1016/j.csda.2022.107655
+
+[6] Cliff, A. D. and Ord, J. K. (1981). *Spatial Processes: Models & Applications*. Pion.
+
+[7] Cohen-Steiner, D., Edelsbrunner, H., and Morozov, D. (2006). "Vines and vineyards by updating persistence in linear time." *Proceedings of the 22nd Annual Symposium on Computational Geometry*, 119-126. https://doi.org/10.1145/1137856.1137877
+
+[8] Curtis, A., Curtis, J., Ajayakumar, J., and Jefferis, E. (2025). "Using spatial mixed methods to reveal the geographic nuances of opioid overdose patterns in small and rural towns." In *New Research in Crime Modeling and Mapping Using Geospatial Technologies*, 211-230. Geotechnologies and the Environment, vol. 27; DOI 10.1007/978-3-031-81580-5_10
+
+[9] Edelsbrunner, H. and Harer, J. (2010). *Computational Topology: An Introduction*. American Mathematical Society.
+
+[10] Edelsbrunner, H., Letscher, D., and Zomorodian, A. (2002). "Topological persistence and simplification." *Discrete & Computational Geometry*, 28, 511-533.
+
+[11] Hepler, S., McKnight, E., Bonny, A., and Kline, D. (2019). "A latent spatial factor approach for synthesizing opioid-associated deaths and treatment admissions in Ohio counties." *Epidemiology*, 30(3), 365-370.
+
+[12] Kline, D., Ji, Y., and Hepler, S. (2021). "A multivariate spatio-temporal model of the opioid epidemic in Ohio: a factor model approach." *Health Services and Outcomes Research Methodology*, 21(1), 42-53.
+
+[13] Limbeck, K. and Rieck, B. (2024). "Detecting Spatial Dependence in Transcriptomics Data using Vectorised Persistence Diagrams." *arXiv:2409.03575*. https://doi.org/10.48550/arXiv.2409.03575
+
+[14] McMaster, R., Masarweh-Zawahri, L., Flynn, K. C., Deo, V. S., and Flannery, D. J. (2025). "Drug overdose death among residents of urban census tracts: How granular geographical analyses uncover socioenvironmental correlates in Cuyahoga County, Ohio." *Journal of Urban Health*, 102(2), 445-458.
+
+[15] Robinson, A. and Turner, K. (2017). "Hypothesis testing for topological data analysis." *Journal of Applied and Computational Topology*, 1, 241-261.
+
+[16] Vejdemo-Johansson, M. and Mukherjee, S. (2022). "Multiple testing with persistent homology." *Foundations of Data Science*, 4(4), 667–705, 2022, DOI 10.3934/fods.2022018

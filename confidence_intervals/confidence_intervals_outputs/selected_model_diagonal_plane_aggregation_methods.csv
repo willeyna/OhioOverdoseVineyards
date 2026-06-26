@@ -1,0 +1,5 @@
+rule,persistence_threshold,n_months_max_h1_significant,interpretation
+month-specific threshold,,17,one cutoff per month
+minimum threshold plane,3.525472574645631e-09,212,least conservative global plane
+mean threshold plane,0.00017948822272086522,19,middle global plane
+maximum threshold plane,0.000407013476354,1,most conservative global plane

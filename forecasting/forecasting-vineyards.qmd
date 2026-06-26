@@ -1,0 +1,3422 @@
+---
+title: "Forecasting Ohio Overdose Vineyards"
+authors: "Nick Bermingham, David White, Nathan Willey"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+    code-overflow: wrap
+    number-sections: true
+    embed-resources: true
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Introduction
+
+This notebook goes with our vineyards paper. We think of vineyards as one approach to the intersection of topological data analysis and time series analysis. One of the most important applications of time series analysis is forecasting: using the past to say something disciplined about the future. In this file we investigate what a forecasting analysis can and cannot say about the Ohio county-month overdose data.
+
+We assume the reader has already read the uniformity, spatiotemporal, and confidence interval files. We remind the reader that our setting is the overdose-deaths-per-capita scalar field on the fixed Ohio county complex.
+
+The randomness in this notebook is the same as the randomness in the uniformity file. In any given (county, month) pair, the number of overdose deaths could have been slightly different according to random events, like the exact dosage a person took, or whether a bystander was nearby with lifesaving naloxone. So when we make 95% forecast intervals for the future, it means we think that for 95% of these hypothetical worlds, their values would be in our intervals.
+
+There are several natural forecasting questions.
+
+First, which counties are forecasted to have unusually high overdose deaths per capita in future months? An answer to this would be extremely helpful to local health departments seeking to save lives, for resource allocation purposes. But this question is very difficult to answer.
+
+Second, what will be the future statewide number of overdose deaths? This is easier to answer, but less useful for resource allocation because it ignores county-to-county differences. Even this forecasting problem is difficult if one only uses the history of the overdose time series. Normally, practitioners include many covariates, but doing so would take us too far afield.
+
+Third, what will be the future of the vines in the vineyard? The Deep Research report and citation map used while drafting this section did not find prior work forecasting future overdose topology using vineyards. The closest related work forecasts overdose outcomes without TDA, or uses TDA for forecasting outside this vineyard-overdose setting. We show below that this forecasting task is difficult, but potentially useful: if maximum $H_1$ persistence could be forecast together with the location of the relevant feature, then the forecast would say something about the magnitude of future local spatial contrasts. We focus on the maximum finite $H_1$ persistence in the monthly sublevel set filtration, but the same scalar forecasting code could be applied to the second largest $H_1$ persistence and other ranked summaries.
+
+In the current data, however, a simple forecastable county count model is not yet trustworthy enough for that role. It fails to achieve independent residuals so we do not trust it for forecasting reasons.
+
+This motivates a narrower forecasting analysis. We forecast two scalar time series: statewide overdose deaths per capita, and maximum $H_1$ persistence, $M_t$. The statewide series is epidemiologically important but ignores differences among counties. The $M_t$ series is still a single time series, but it is obtained only after passing each monthly county surface through the Ohio adjacency complex, so it retains one kind of spatial/topological information. Forecasts of $M_t$ tell us about the magnitude of future spikes but don't tell us where they might happen.
+
+Hence, separately, we attempt to forecast the county label associated with the strongest future $H_1$ feature. We do so using a categorical time-series forecast over county labels associated with the strongest monthly $H_1$ feature. This analysis can output either a top county or (as we use it) a list of the top 5 counties by predicted probability for that topological label.
+
+## Related Work
+
+The overdose forecasting literature is broad, but most of it is not topological. Ohio-specific work has used spatial and spatiotemporal statistical models to estimate latent opioid burden and county-level misuse prevalence [8, 12]. Ma, Tran, and White studied predictive relationships between Ohio drug seizures and overdose deaths using time-series and regression methods [20]. These papers are important context for us because they show that Ohio overdose mortality has temporal structure, spatial structure, and external drivers that a forecasting model should eventually use.
+
+A separate group of overdose papers is closer to forecasting: CASTNet forecasts opioid overdose using community-attentive spatiotemporal neural networks [6], while [2] forecasts future opioid-incidence heat maps from past maps, [13] uses point-process models to predict overdose death hotspots from heterogeneous emergency medical services (EMS) and coroner data, [16] uses machine learning to forecast an early-warning system for emerging overdose patterns, and [15] studies monthly opioid-incident forecasting for rapid response in Kentucky. These papers forecast overdose burden or hotspot risk, but they do not compute persistent homology of the future overdose surface.
+
+There is also a growing literature in which topological data analysis helps with prediction or forecasting, e.g., for epidemic modeling of Zika [14, 18] or for financial crashes [7]. In these examples, topology is usually a feature used by a downstream model, not the future object being forecast.
+
+Vineyards have been used to track spatial and spatiotemporal anomalies in COVID-19 data [9]. Various time-dependent topological summaries, including persistence-vineyard information, has been used to predict future behavior in tumor-immune simulations [21]. These works show that dynamic topology can be tracked and, in some settings, used predictively. 
+
+Our analysis sits between these traditions. We fit traditional time series models (including SARIMA models, explained below), use residual diagnostics to check that the models leave independent residuals, use classical forecasting from time-series analysis [11, 17], and use residual bootstrap intervals when we want empirical prediction bands. We compute topology on the same fixed Ohio county complex used elsewhere in this project. Stability of persistence diagrams under perturbations of scalar fields [4] is the reason it is meaningful to compare monthly diagrams and forecasted perturbations of the deaths-per-capita field.
+
+## Roadmap to this file
+
+This file has five main parts. First, it reads the county-month data, defines the fixed Ohio county complex, and reads the historical $H_1$ summaries. Second, it attempts to forecast (county, month) overdose death rates, explains time series forecasting, and constructs models to forecast statewide overdose death rate and max $H_1$ persistence. Third, it reports several forecasts and their cross-validation diagnostics. Fourth, it studies categorical forecasts of the county label associated with the strongest $H_1$ feature. Finally, it extracts actionable public health insights from the forecasts.
+
+## Setup code
+
+This notebook renders quickly by reading saved outputs, but the source code that creates those outputs is visible below. Expensive chunks are folded and marked `eval: false`; running them regenerates the CSV, PNG, and PDF files used by the later display chunks. In the Python code, expressions such as `f"{prefix}_persistence"` are format strings: they build a column name by substituting the current value of `prefix`. The code below imports the modules we need and sets up the paths to the files we will read.
+
+```{python}
+#| label: forecast-setup
+from __future__ import annotations
+
+from pathlib import Path
+import math
+import warnings
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from IPython.display import Image, display
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.graphics.tsaplots import plot_acf
+
+HERE = Path.cwd().resolve()
+if (HERE / "forecasting-vineyards.qmd").exists():
+    FORECAST_DIR = HERE
+elif (HERE / "forecasting files" / "forecasting-vineyards.qmd").exists():
+    FORECAST_DIR = HERE / "forecasting files"
+else:
+    raise FileNotFoundError("Could not locate forecasting-vineyards.qmd or forecasting files/.")
+
+OUTPUT_DIR = FORECAST_DIR / "forecasting_vineyards_outputs"
+FIGURE_DIR = OUTPUT_DIR / "figures"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+```
+
+The saved-output production code is shown below in the sections where the outputs first appear. Those chunks are marked `eval: false` so ordinary rendering reads saved CSV, PNG, and PDF files instead of rerunning the expensive simulations and exact persistence calculations.
+
+## Data and Preliminary Mortality Counts
+
+The county-month data contain 88 Ohio counties and 213 observed months. The first month is January 2007 and the last month in the file is September 2024. The topology is always computed on the same fixed Ohio county complex; the scalar value attached to each county changes by month.
+
+The final months of our data are incomplete because overdose deaths often require toxicology and death-investigation processing. In the snapshot used here, downloaded in October 2024, the statewide deaths-per-capita series drops implausibly sharply near the end. The Ohio Department of Health said at that time that data through 2022 was trustworthy but later data was still preliminary. The 2024 data was even more preliminary, as even at the state level it had not been fully reported yet, to say nothing of the death investigation or CDC national level work. Thus, these values are not used for model training or cross validation. The main validation periods are completed years: a 2022 holdout obtained by training through December 2021, and a 2023 holdout obtained by training through December 2022.
+
+The following non-executed source chunks show how the historical $H_1$ summaries are produced. The first chunk defines the data-loading, topology, and summary helpers. The second chunk uses those helpers to load the county-month files, mark preliminary months, compute exact historical $H_1$ summaries, and save the data output files used below.
+
+```{python}
+#| label: forecasting-data-helper-source
+#| eval: false
+import contextlib
+import io
+import json
+import math
+import os
+import sys
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from scipy import stats
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.nonparametric.smoothers_lowess import lowess
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    def tqdm(x, **kwargs):
+        """Return an iterable unchanged when tqdm is unavailable.
+
+        Args:
+            See the function signature for input names and types.
+
+        Returns:
+            The dataframe, series, array, model object, or scalar described by the function name.
+        """
+        return x
+
+HERE = Path.cwd()
+if not (HERE.parent / "data" / "county_drug_death.csv").exists() and (HERE / "forecasting files" / "county_drug_death.csv").exists():
+    HERE = HERE / "forecasting files"
+
+OUTPUT_DIR = HERE / "forecasting_vineyards_outputs"
+FIGURE_DIR = OUTPUT_DIR / "figures"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+
+VINEYARD_CODE = HERE.parent
+if str(VINEYARD_CODE) not in sys.path:
+    sys.path.insert(0, str(VINEYARD_CODE))
+from polygonal_surface import PolygonalSurface as PS
+
+CONFIG = {
+    "counts_wide_path": HERE.parent / "data" / "county_drug_death.csv",
+    "rates_wide_path": HERE.parent / "data" / "pop_normalized_county_drug_death.csv",
+    "population_wide_path": HERE.parent / "data" / "ohio_county_populations.csv",
+    "adjacency_path": HERE.parent / "data" / "ohio_neighbors.txt",
+    "bootstrap_significance_path": HERE / "forecasting_vineyards_outputs" / "ohio_monthly_h1_bootstrap_significance.csv",
+    "random_seed": int(os.environ.get("FORECAST_REBUILD_RANDOM_SEED", "20260618")),
+    "n_holdout_simulations": int(os.environ.get("FORECAST_REBUILD_HOLDOUT_SIMULATIONS", "120")),
+    "n_future_simulations": int(os.environ.get("FORECAST_REBUILD_FUTURE_SIMULATIONS", "120")),
+    "top_rank_count": int(os.environ.get("FORECAST_REBUILD_TOP_RANK_COUNT", "10")),
+    "future_horizon_months": int(os.environ.get("FORECAST_REBUILD_FUTURE_HORIZON", "12")),
+    "completed_training_end": pd.Timestamp("2023-12-01"),
+    "preliminary_start": pd.Timestamp("2024-01-01"),
+    "holdouts": [
+        {"experiment": "C", "train_end": pd.Timestamp("2020-12-01"), "holdout_start": pd.Timestamp("2021-01-01"), "holdout_end": pd.Timestamp("2021-12-01")},
+        {"experiment": "A", "train_end": pd.Timestamp("2021-12-01"), "holdout_start": pd.Timestamp("2022-01-01"), "holdout_end": pd.Timestamp("2022-12-01")},
+        {"experiment": "B", "train_end": pd.Timestamp("2022-12-01"), "holdout_start": pd.Timestamp("2023-01-01"), "holdout_end": pd.Timestamp("2023-12-01")},
+    ],
+}
+
+rng_global = np.random.default_rng(CONFIG["random_seed"])
+print(json.dumps({k: str(v) for k, v in CONFIG.items() if not isinstance(v, list)}, indent=2))
+
+# ---- Data-loading helpers: normalize county labels, reshape monthly files, load population, and validate the county-month grid ----
+
+@dataclass
+class CountModelFit:
+    result: Any
+    alpha: float
+    formula: str
+    method: str
+    converged: bool
+    n_train_rows: int
+    n_train_months: int
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+
+
+def parse_month_label(label: str) -> tuple[int, int]:
+    """Parse a wide monthly column label such as 2007_1.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    year_text, month_text = str(label).split("_")
+    return int(year_text), int(month_text)
+
+
+def canonical_county_name(series: pd.Series) -> pd.Series:
+    """Normalize county labels so data files match the Ohio complex.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return (
+        series.astype(str)
+        .str.replace(r"\s+County,\s*OH$", "", regex=True)
+        .str.replace(r"\s+County$", "", regex=True)
+        .str.strip()
+        .replace({"Van Wert": "VanWert"})
+    )
+
+
+def wide_county_month_to_long(path: Path, value_name: str) -> pd.DataFrame:
+    """Reshape a county-by-month wide file into a long county-month table.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    wide = pd.read_csv(path).rename(columns={"Unnamed: 0": "county", "": "county"})
+    if "county" not in wide.columns:
+        wide = wide.rename(columns={wide.columns[0]: "county"})
+    wide["county"] = canonical_county_name(wide["county"])
+    long = wide.melt(id_vars="county", var_name="month_label", value_name=value_name)
+    parsed = long["month_label"].map(parse_month_label)
+    long["year"] = [x[0] for x in parsed]
+    long["month"] = [x[1] for x in parsed]
+    long[value_name] = pd.to_numeric(long[value_name], errors="coerce")
+    long["date"] = pd.to_datetime(dict(year=long["year"], month=long["month"], day=1))
+    return long
+
+
+def load_population_by_county_year(path: Path) -> pd.DataFrame:
+    """Load annual county populations and reshape them to county-year rows.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    pop = pd.read_csv(path).rename(columns={"Unnamed: 0": "county", "": "county"})
+    if "county" not in pop.columns:
+        pop = pop.rename(columns={pop.columns[0]: "county"})
+    pop["county"] = canonical_county_name(pop["county"])
+    year_cols = [c for c in pop.columns if str(c).isdigit()]
+    pop_long = pop.melt(id_vars="county", value_vars=year_cols, var_name="year", value_name="population")
+    pop_long["year"] = pop_long["year"].astype(int)
+    pop_long["population"] = pd.to_numeric(pop_long["population"], errors="coerce")
+    return pop_long
+
+
+def read_surface(adjacency_path: Path) -> Any:
+    """Load the fixed Ohio county adjacency complex.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The fixed Ohio polygonal surface object.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        return PS.read_adj(str(adjacency_path))
+
+
+def load_county_month_data(config: dict[str, Any], county_order: list[str]) -> pd.DataFrame:
+    """Load, merge, validate, and sort the county-month overdose data.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    counts = wide_county_month_to_long(Path(config["counts_wide_path"]), "deaths")
+    rates = wide_county_month_to_long(Path(config["rates_wide_path"]), "deaths_per_capita_file")
+    pop = load_population_by_county_year(Path(config["population_wide_path"]))
+
+    df = counts.merge(
+        rates[["county", "date", "deaths_per_capita_file"]],
+        on=["county", "date"],
+        how="inner",
+        validate="one_to_one",
+    )
+    df = df[df["county"].isin(county_order)].copy()
+    df = df.merge(pop, on=["county", "year"], how="left", validate="many_to_one")
+
+    positive = (df["deaths"] > 0) & (df["deaths_per_capita_file"] > 0)
+    df["population_from_rate"] = np.nan
+    df.loc[positive, "population_from_rate"] = df.loc[positive, "deaths"] / df.loc[positive, "deaths_per_capita_file"]
+    df["population"] = df["population"].fillna(df["population_from_rate"])
+    df = df.sort_values(["county", "date"]).reset_index(drop=True)
+    df["population"] = df.groupby("county")["population"].transform(lambda s: s.ffill().bfill())
+    df["population"] = df.groupby("county")["population"].transform(lambda s: s.fillna(s.median()))
+    df["population"] = df["population"].round().astype(int)
+    df["deaths_per_capita"] = df["deaths"] / df["population"].astype(float)
+    df["month_label"] = df["year"].astype(str) + "_" + df["month"].astype(str)
+    date_order = {d: i for i, d in enumerate(sorted(df["date"].unique()))}
+    df["time_index"] = df["date"].map(date_order).astype(int)
+    df = df.sort_values(["county", "date"]).reset_index(drop=True)
+
+    required = ["county", "year", "month", "date", "population", "deaths", "deaths_per_capita"]
+    if df[required].isna().any().any():
+        raise ValueError("Missing required county-month data:\n" + str(df[required].isna().sum()))
+    if df["county"].nunique() != 88:
+        raise ValueError(f"Expected 88 counties; found {df['county'].nunique()}.")
+    expected_rows = df["county"].nunique() * df["date"].nunique()
+    if len(df) != expected_rows:
+        raise ValueError(f"Incomplete county-month grid: {len(df)} rows, expected {expected_rows}.")
+    if (df["population"] <= 0).any() or (df["deaths"] < 0).any() or (df["deaths_per_capita"] < 0).any():
+        raise ValueError("Population, deaths, and rates failed non-negativity checks.")
+    return df
+
+
+def statewide_series(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate county rows into a statewide monthly deaths-per-capita series.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return (
+        df.groupby("date", as_index=False)
+        .agg(statewide_deaths=("deaths", "sum"), statewide_population=("population", "sum"))
+        .assign(statewide_rate=lambda x: x["statewide_deaths"] / x["statewide_population"])
+        .sort_values("date")
+    )
+```
+
+The following code defines several helper functions, including error metrics, interval summaries, threshold choices, and simple benchmark forecasts to compare our more sophisticated forecasts to.
+
+```{python}
+#| label: forecasting-metric-helper-source
+#| eval: false
+def rmse(observed: pd.Series, predicted: pd.Series) -> float:
+    """Compute root mean squared error.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return float(np.sqrt(np.mean((np.asarray(observed, dtype=float) - np.asarray(predicted, dtype=float)) ** 2)))
+
+
+def mae(observed: pd.Series, predicted: pd.Series) -> float:
+    """Compute mean absolute error.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return float(np.mean(np.abs(np.asarray(observed, dtype=float) - np.asarray(predicted, dtype=float))))
+
+
+def interval_summary(values: pd.Series, prefix: str) -> pd.Series:
+    """Summarize a simulated distribution with central values and quantile intervals.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    x = np.asarray(values, dtype=float)
+    return pd.Series({
+        f"{prefix}_mean": float(np.mean(x)),
+        f"{prefix}_median": float(np.median(x)),
+        f"{prefix}_lower_50": float(np.quantile(x, 0.25)),
+        f"{prefix}_upper_50": float(np.quantile(x, 0.75)),
+        f"{prefix}_lower_80": float(np.quantile(x, 0.10)),
+        f"{prefix}_upper_80": float(np.quantile(x, 0.90)),
+        f"{prefix}_lower_95": float(np.quantile(x, 0.025)),
+        f"{prefix}_upper_95": float(np.quantile(x, 0.975)),
+    })
+
+
+def choose_hotspot_threshold(train_df: pd.DataFrame) -> float:
+    """Choose the county-rate exceedance threshold from training data.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return float(train_df["deaths_per_capita"].quantile(0.90))
+
+
+def choose_h1_threshold(observed_h1: pd.DataFrame) -> float:
+    """Choose the reference max-H1 persistence threshold.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    sig_path = Path(CONFIG["bootstrap_significance_path"])
+    if sig_path.exists():
+        sig = pd.read_csv(sig_path)
+        if "band" in sig.columns and sig["band"].notna().any():
+            return float(sig["band"].max())
+    return float(observed_h1["max_h1_persistence"].quantile(0.90))
+
+
+def normal_tail_probability(threshold: float, mean: float, se: float) -> float:
+    """Compute a Gaussian upper-tail probability for a forecast threshold.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    if not np.isfinite(se) or se <= 0:
+        return float(mean > threshold)
+    z = (threshold - mean) / se
+    return float(0.5 * math.erfc(z / math.sqrt(2.0)))
+
+
+def baseline_statewide_forecasts(train_state: pd.DataFrame, holdout_dates: list[pd.Timestamp]) -> pd.DataFrame:
+    """Compute simple statewide-rate benchmark forecasts.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    train = train_state.set_index("date").sort_index()
+    rows = []
+    last_rate = float(train["statewide_rate"].iloc[-1])
+    recent_mean = float(train["statewide_rate"].tail(12).mean())
+    for horizon, date in enumerate(holdout_dates, start=1):
+        same_month_history = train[train.index.month == date.month]["statewide_rate"]
+        last_year_date = date - pd.DateOffset(years=1)
+        seasonal_naive = float(train.loc[last_year_date, "statewide_rate"]) if last_year_date in train.index else float(same_month_history.iloc[-1])
+        seasonal_mean = float(same_month_history.mean())
+        rows.extend([
+            {"model": "seasonal_naive", "horizon": horizon, "date": date, "predicted_rate": seasonal_naive, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan},
+            {"model": "last_observation", "horizon": horizon, "date": date, "predicted_rate": last_rate, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan},
+            {"model": "recent_12_month_average", "horizon": horizon, "date": date, "predicted_rate": recent_mean, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan},
+            {"model": "same_month_training_mean", "horizon": horizon, "date": date, "predicted_rate": seasonal_mean, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan},
+        ])
+    return pd.DataFrame(rows)
+
+
+
+def h1_diagram_sublevel(ps: Any, county_order: list[str], values: np.ndarray) -> np.ndarray:
+    """Compute the exact finite H1 Sublevel set diagram for one county-rate surface.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    region_values = {county: float(value) for county, value in zip(county_order, values)}
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = ps.sublevel_SC(region_values)
+    st.compute_persistence(homology_coeff_field=2, min_persistence=0.0)
+    intervals = np.asarray(st.persistence_intervals_in_dimension(1), dtype=float)
+    if intervals.size == 0:
+        return np.empty((0, 2), dtype=float)
+    intervals = intervals[np.isfinite(intervals).all(axis=1)]
+    return intervals if intervals.size else np.empty((0, 2), dtype=float)
+
+
+def ranked_h1_rows(diagram: np.ndarray, rank_count: int, base: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert one H1 diagram into ranked persistence rows.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    if len(diagram):
+        pers = diagram[:, 1] - diagram[:, 0]
+        order = np.argsort(-pers)
+        sorted_diagram = diagram[order]
+        sorted_pers = pers[order]
+    else:
+        sorted_diagram = np.empty((0, 2), dtype=float)
+        sorted_pers = np.array([], dtype=float)
+    rows = []
+    for rank in range(1, rank_count + 1):
+        row = dict(base)
+        row["rank"] = rank
+        row["h1_point_count"] = int(len(diagram))
+        if rank <= len(sorted_pers):
+            row["birth"] = float(sorted_diagram[rank - 1, 0])
+            row["death"] = float(sorted_diagram[rank - 1, 1])
+            row["persistence"] = float(sorted_pers[rank - 1])
+        else:
+            row["birth"] = np.nan
+            row["death"] = np.nan
+            row["persistence"] = 0.0
+        rows.append(row)
+    return rows
+
+
+def compute_observed_h1(df: pd.DataFrame, ps: Any, county_order: list[str], rank_count: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute exact observed monthly H1 summaries and ranked features.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    matrix = df.pivot(index="county", columns="date", values="deaths_per_capita").loc[county_order]
+    summary_rows = []
+    ranked_rows = []
+    for month_index, date in enumerate(tqdm(list(matrix.columns), desc="Observed exact H1")):
+        values = matrix[date].to_numpy(dtype=float)
+        diagram = h1_diagram_sublevel(ps, county_order, values)
+        pers = diagram[:, 1] - diagram[:, 0] if len(diagram) else np.array([], dtype=float)
+        base = {"date": date, "month_label": f"{date.year}_{date.month}", "month_index": month_index, "year": date.year, "month": date.month, "source": "observed"}
+        summary_rows.append({**base, "h1_point_count": int(len(diagram)), "max_h1_persistence": float(pers.max()) if len(pers) else 0.0, "top_ranked_total_persistence": float(np.sort(pers)[-rank_count:].sum()) if len(pers) else 0.0})
+        ranked_rows.extend(ranked_h1_rows(diagram, rank_count, base))
+    return pd.DataFrame(summary_rows), pd.DataFrame(ranked_rows)
+
+
+def compute_simulated_h1(simulations: pd.DataFrame, ps: Any, county_order: list[str], rank_count: int, label: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Compute exact H1 summaries for simulated county-rate surfaces.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    matrix = simulations.pivot_table(index=["simulation", "horizon", "date"], columns="county", values="deaths_per_capita", aggfunc="first").sort_index()
+    summary_rows = []
+    ranked_rows = []
+    failures = []
+    for (simulation, horizon, date), row in tqdm(matrix.iterrows(), total=len(matrix), desc=f"{label} exact H1"):
+        try:
+            values = row.loc[county_order].to_numpy(dtype=float)
+            diagram = h1_diagram_sublevel(ps, county_order, values)
+            pers = diagram[:, 1] - diagram[:, 0] if len(diagram) else np.array([], dtype=float)
+            base = {"source": label, "simulation": int(simulation), "horizon": int(horizon), "date": date}
+            summary_rows.append({**base, "h1_point_count": int(len(diagram)), "max_h1_persistence": float(pers.max()) if len(pers) else 0.0, "top_ranked_total_persistence": float(np.sort(pers)[-rank_count:].sum()) if len(pers) else 0.0})
+            ranked_rows.extend(ranked_h1_rows(diagram, rank_count, base))
+        except Exception as exc:
+            failures.append({"source": label, "simulation": int(simulation), "horizon": int(horizon), "date": date, "error": repr(exc)})
+    failures_df = pd.DataFrame(failures)
+    failure_rate = len(failures_df) / max(len(matrix), 1)
+    if failure_rate > 0.10:
+        warnings.warn(f"More than 10% of {label} H1 computations failed: {failure_rate:.1%}")
+    return pd.DataFrame(summary_rows), pd.DataFrame(ranked_rows), failures_df
+```
+
+The following cell is for data preparation: we load the Ohio county data, split completed/preliminary months, and record the $H_1$ persistence information as in our paper.
+
+```{python}
+#| label: forecasting-data-and-historical-h1-source
+#| eval: false
+
+
+ps = read_surface(Path(CONFIG["adjacency_path"]))
+county_order = [name for name in ps.R.keys() if not str(name).startswith("exterior")]
+df_all = load_county_month_data(CONFIG, county_order)
+state_all = statewide_series(df_all)
+
+completed_df = df_all[df_all["date"] <= CONFIG["completed_training_end"]].copy()
+preliminary_df = df_all[df_all["date"] >= CONFIG["preliminary_start"]].copy()
+state_completed = statewide_series(completed_df)
+
+snapshot_summary = pd.DataFrame([
+    {"quantity": "county_count", "value": df_all["county"].nunique()},
+    {"quantity": "observed_month_count", "value": df_all["date"].nunique()},
+    {"quantity": "first_observed_month", "value": df_all["date"].min().date().isoformat()},
+    {"quantity": "last_observed_month", "value": df_all["date"].max().date().isoformat()},
+    {"quantity": "completed_training_end", "value": CONFIG["completed_training_end"].date().isoformat()},
+    {"quantity": "preliminary_months_excluded_from_main_training", "value": preliminary_df["date"].nunique()},
+    {"quantity": "missing_population_rows", "value": int(df_all["population"].isna().sum())},
+])
+snapshot_summary.to_csv(OUTPUT_DIR / "forecast_data_snapshot_summary.csv", index=False)
+snapshot_summary
+
+# ---- Preliminary-tail figure: mark the late-2024 months excluded from main forecast training ----
+
+fig, ax = plt.subplots(figsize=(10, 4.6))
+ax.plot(state_all["date"], state_all["statewide_rate"], color="#2f3e46", lw=1.5, label="Observed statewide rate")
+ax.axvspan(CONFIG["preliminary_start"], state_all["date"].max(), color="#d62828", alpha=0.12, label="Preliminary tail excluded from main fitting")
+ax.set_title("Statewide overdose deaths per capita, with preliminary 2024 tail marked")
+ax.set_xlabel("Month")
+ax.set_ylabel("Deaths per capita")
+ax.legend()
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"statewide_rate_preliminary_tail.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+# ---- Historical topology: compute observed exact monthly H1 diagrams and ranked H1 summaries ----
+
+observed_h1, observed_ranked_h1 = compute_observed_h1(completed_df, ps, county_order, CONFIG["top_rank_count"])
+observed_h1.to_csv(OUTPUT_DIR / "historical_h1_persistence_summary.csv", index=False)
+observed_ranked_h1.to_csv(OUTPUT_DIR / "historical_h1_ranked_persistence.csv", index=False)
+h1_threshold = choose_h1_threshold(observed_h1)
+observed_h1.tail()
+
+# ---- Historical summary plots: show statewide deaths, max county rate, and max H1 persistence through 2023 ----
+
+hist_state = statewide_series(completed_df)
+max_county_rate = completed_df.groupby("date", as_index=False).agg(max_county_rate=("deaths_per_capita", "max"))
+fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+axes[0].plot(observed_h1["date"], observed_h1["max_h1_persistence"], color="#264653")
+axes[0].axhline(h1_threshold, color="#a23b72", ls=":", lw=1.2, label="Reference H1 threshold")
+axes[0].set_ylabel("Max H1 persistence")
+axes[0].legend()
+axes[1].plot(hist_state["date"], hist_state["statewide_deaths"], color="#457b9d")
+axes[1].set_ylabel("Statewide deaths")
+axes[2].plot(max_county_rate["date"], max_county_rate["max_county_rate"], color="#2a9d8f")
+axes[2].set_ylabel("Max county rate")
+axes[2].set_xlabel("Month")
+fig.suptitle("Historical count, rate, and H1 summaries through December 2023", y=0.995)
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"historical_h1_statewide_rate_timeseries.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+```
+
+After the code chunks above have been run once, ordinary rendering uses the helper below to read the saved outputs in the sections where they are displayed. There is also a helper function to use to test our forecast models. 
+
+```{python}
+#| label: forecast-read-helpers
+pd.set_option("display.max_columns", 40)
+pd.set_option("display.width", 160)
+
+def read_derived_csv(name: str, **kwargs) -> pd.DataFrame:
+    """Read one saved CSV created by the visible production code.
+
+    Args:
+        name: File name inside the forecasting output directory.
+        **kwargs: Additional keyword arguments passed to pandas.read_csv.
+
+    Returns:
+        The requested CSV as a dataframe.
+    """
+    path = OUTPUT_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return pd.read_csv(path, **kwargs)
+
+
+def show_table(df: pd.DataFrame, n: int = 12, columns: list[str] | None = None) -> pd.DataFrame:
+    """Return a short display version of a dataframe.
+
+    Args:
+        df: Source dataframe.
+        n: Number of rows to keep.
+        columns: Optional subset of columns to display.
+
+    Returns:
+        A dataframe suitable for compact display.
+    """
+    out = df.copy()
+    if columns is not None:
+        out = out[columns]
+    return out.head(n)
+
+def heldout_correlation_squared(observed: pd.Series, predicted: pd.Series) -> float:
+    """Compute squared heldout Pearson correlation when it is defined.
+
+    Args:
+        observed: Observed values in the holdout window.
+        predicted: Point forecasts for the same holdout window.
+
+    Returns:
+        The squared Pearson correlation, or NaN if either vector is constant or incomplete.
+    """
+    joined = pd.DataFrame({"observed": observed, "predicted": predicted}).dropna()
+    if len(joined) < 2 or joined["observed"].std(ddof=0) == 0 or joined["predicted"].std(ddof=0) == 0:
+        return np.nan
+    return float(joined["observed"].corr(joined["predicted"]) ** 2)
+
+```
+
+## What are we forecasting?
+
+Let $D(c,t)$ be the number of overdose deaths in county $c$ during month $t$, and let $N(c,t)$ be the county population denominator. The county rate is
+
+$$
+R(c,t) = \frac{D(c,t)}{N(c,t)}.
+$$
+
+A county hotspot forecast would estimate probabilities such as
+
+$$
+P\{R(c,T+h) > r_*\},
+$$
+
+where $r_*$ is a chosen high-rate threshold and $h$ is the forecast horizon. That is the most directly actionable target, but it requires a county-level forecasting model that gives reliable future county surfaces.
+
+The topological scalar used here is
+
+$$
+M_t = \max_{(b,d) \in D_t^{(1)}} (d-b),
+$$
+
+where $D_t^{(1)}$ is the finite $H_1$ persistence diagram for the deaths-per-capita field in month $t$. If a month has no finite $H_1$ points, we set $M_t=0$. This is the maximum persistence among loop-like sublevel set features in that month.
+
+In a sublevel set filtration, low-rate counties enter first and high-rate counties enter later. An $H_1$ feature appears when the counties that have already entered form a loop around a region that has not yet entered. The death value is the threshold where the hole fills in. Persistence is the gap between the birth and death thresholds. It is a rate-gap-like spatial contrast, but it is not a county forecast. Many different county-rate surfaces can have the same maximum $H_1$ persistence.
+
+## Why the Simple County Forecast Is Not Used as the Main Forecast
+
+The code in this section fits a forecastable negative-binomial model for county-month death counts. First, we describe the model. Let $D(c,t)$ be the overdose death count in county $c$ and month $t$, and let $N(c,t)$ be the county population. We fit
+
+$$
+D(c,t) \sim \operatorname{NegBin}(\mu(c,t), \alpha)
+$$
+
+with
+
+$$
+\begin{aligned}
+\log \mu(c,t)
+&= \log N(c,t) + \beta_c + \gamma_{m(t)} + \eta t \\
+&\quad + \theta_1 \log(1 + D(c,t-1))
++ \theta_2 R(c,t-1)
++ \theta_3 \log(1 + D_{\mathrm{OH}}(t-1)).
+\end{aligned}
+$$
+
+Here $\beta_c$ is a county baseline, $\gamma_{m(t)}$ is a month-of-year effect, $R(c,t-1)$ is the previous county deaths-per-capita value, and $D_{\mathrm{OH}}(t-1)$ is the previous statewide death count.
+
+What makes the model "forecastable" is that $D(c,t+1)$ depends only on the past and present, not terms like $D(c',t+1)$ that would not be known at time $t$.
+
+
+The next non-executed source chunks show the attempted county-level forecasting model. They fit the forecastable negative-binomial count model, simulate county-month death counts in completed-year holdouts, compute induced $H_1$ summaries, and save the county-model diagnostics. We provide the code because this failed attempt explains why the later forecasts focus on scalar statewide and scalar topological series, and because future readers may wish to expand on this model.
+
+```{python}
+#| label: county-negative-binomial-model-source
+#| eval: false
+# ---- Forecastable county count model: add lagged predictors, fit the negative-binomial GLM, and simulate future county counts recursively ----
+
+def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add lagged county and statewide predictors used by the forecastable count model.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    work = df.sort_values(["county", "date"]).copy()
+    work["lag_deaths"] = work.groupby("county")["deaths"].shift(1).fillna(0.0)
+    work["lag_rate"] = work.groupby("county")["deaths_per_capita"].shift(1).fillna(0.0)
+    statewide_lag = work.groupby("date")["deaths"].sum().sort_index().shift(1).rename("statewide_lag_deaths")
+    work = work.merge(statewide_lag, left_on="date", right_index=True, how="left")
+    work["statewide_lag_deaths"] = work["statewide_lag_deaths"].fillna(0.0)
+    work["log1p_lag_deaths"] = np.log1p(work["lag_deaths"])
+    work["lag_rate_filled"] = work["lag_rate"]
+    work["log1p_statewide_lag_deaths"] = np.log1p(work["statewide_lag_deaths"])
+    work["log_population"] = np.log(work["population"].astype(float))
+    return work
+
+
+def fit_count_model(train_df: pd.DataFrame) -> CountModelFit:
+    """Fit the negative-binomial county-month count model used as a diagnostic attempt.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        A CountModelFit object containing the fitted model and metadata.
+    """
+    work = add_lag_features(train_df)
+    formula = "deaths ~ C(county) + C(month) + time_index + log1p_lag_deaths + lag_rate_filled + log1p_statewide_lag_deaths"
+    offset = work["log_population"]
+    poisson = smf.glm(formula=formula, data=work, offset=offset, family=sm.families.Poisson()).fit(maxiter=200)
+    mu_p = np.maximum(np.asarray(poisson.predict(work, offset=offset), dtype=float), 1e-9)
+    pearson = np.sum((work["deaths"].to_numpy(dtype=float) - mu_p) ** 2 / mu_p)
+    df_resid = max(int(poisson.df_resid), 1)
+    alpha = max((pearson / df_resid - 1.0) / max(float(np.mean(mu_p)), 1e-9), 1e-8)
+    nb_model = smf.glm(
+        formula=formula,
+        data=work,
+        offset=offset,
+        family=sm.families.NegativeBinomial(alpha=alpha),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        nb_result = nb_model.fit(maxiter=200)
+    converged = bool(getattr(nb_result, "converged", True)) and not any("convergence" in str(w.message).lower() for w in caught)
+    return CountModelFit(
+        result=nb_result,
+        alpha=float(alpha),
+        formula=formula,
+        method="statsmodels GLM NegativeBinomial with Pearson alpha estimated from a Poisson fit",
+        converged=converged,
+        n_train_rows=len(work),
+        n_train_months=work["date"].nunique(),
+        train_start=work["date"].min(),
+        train_end=work["date"].max(),
+    )
+
+
+def future_base_for_dates(template_df: pd.DataFrame, start_after: pd.Timestamp, horizon_count: int, observed_df_for_population: pd.DataFrame | None = None) -> dict[int, pd.DataFrame]:
+    """Build county-month design rows for recursive future forecast months.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    last_time_index = int(template_df["time_index"].max())
+    last_pop = template_df.sort_values("date").groupby("county", sort=False).tail(1)[["county", "population"]]
+    observed_pop = None if observed_df_for_population is None else observed_df_for_population[["county", "date", "population"]].copy()
+    bases = {}
+    for horizon in range(1, horizon_count + 1):
+        date = start_after + pd.DateOffset(months=horizon)
+        base = last_pop.copy()
+        if observed_pop is not None:
+            pop_this = observed_pop.loc[observed_pop["date"].eq(date), ["county", "population"]]
+            if len(pop_this):
+                base = base.drop(columns=["population"]).merge(pop_this, on="county", how="left")
+                base["population"] = base["population"].ffill().bfill()
+        base["date"] = date
+        base["year"] = date.year
+        base["month"] = date.month
+        base["month_label"] = f"{date.year}_{date.month}"
+        base["time_index"] = last_time_index + horizon
+        base["log_population"] = np.log(base["population"].astype(float))
+        bases[horizon] = base
+    return bases
+
+
+def future_month_frame(base: pd.DataFrame, previous_state: pd.DataFrame, previous_statewide_deaths: float) -> pd.DataFrame:
+    """Attach lagged simulated counts and rates to a future county-month design frame.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    prev = previous_state[["county", "deaths", "deaths_per_capita"]].rename(columns={"deaths": "lag_deaths", "deaths_per_capita": "lag_rate"})
+    frame = base.merge(prev, on="county", how="left", validate="one_to_one")
+    frame["statewide_lag_deaths"] = float(previous_statewide_deaths)
+    frame["log1p_lag_deaths"] = np.log1p(frame["lag_deaths"].fillna(0.0))
+    frame["lag_rate_filled"] = frame["lag_rate"].fillna(0.0)
+    frame["log1p_statewide_lag_deaths"] = np.log1p(frame["statewide_lag_deaths"])
+    return frame
+
+
+def simulate_negative_binomial(mu: np.ndarray, alpha: float, rng: np.random.Generator) -> np.ndarray:
+    """Draw negative-binomial counts from fitted means and overdispersion.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        A NumPy array of simulated nonnegative integer counts.
+    """
+    mu = np.maximum(np.asarray(mu, dtype=float), 1e-12)
+    alpha = max(float(alpha), 1e-12)
+    n = 1.0 / alpha
+    p = n / (n + mu)
+    draws = rng.negative_binomial(n=n, p=p)
+    if (draws < 0).any():
+        raise ValueError("Negative-binomial simulation produced invalid negative counts.")
+    return draws.astype(int)
+
+
+def simulate_paths(train_df: pd.DataFrame, fit: CountModelFit, horizon_count: int, n_simulations: int, rng: np.random.Generator, observed_df_for_population: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Simulate recursive county-month overdose count paths from a fitted count model.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    bases = future_base_for_dates(train_df, train_df["date"].max(), horizon_count, observed_df_for_population)
+    last_observed = train_df.sort_values("date").groupby("county", sort=False).tail(1)[["county", "population", "deaths", "deaths_per_capita"]].copy()
+    last_statewide_deaths = float(last_observed["deaths"].sum())
+    rows = []
+    for simulation in tqdm(range(n_simulations), desc=f"Simulating {horizon_count}-month county paths"):
+        previous_state = last_observed.copy()
+        previous_statewide = last_statewide_deaths
+        for horizon in range(1, horizon_count + 1):
+            frame = future_month_frame(bases[horizon], previous_state, previous_statewide)
+            mu = np.maximum(np.asarray(fit.result.predict(frame, offset=frame["log_population"]), dtype=float), 1e-12)
+            deaths = simulate_negative_binomial(mu, fit.alpha, rng)
+            frame["simulation"] = simulation
+            frame["horizon"] = horizon
+            frame["mu"] = mu
+            frame["deaths"] = deaths
+            frame["deaths_per_capita"] = frame["deaths"] / frame["population"].astype(float)
+            rows.append(frame[["simulation", "horizon", "date", "year", "month", "month_label", "county", "population", "mu", "deaths", "deaths_per_capita"]].copy())
+            previous_state = frame[["county", "population", "deaths", "deaths_per_capita"]].copy()
+            previous_statewide = float(previous_state["deaths"].sum())
+    sims = pd.concat(rows, ignore_index=True)
+    if (sims["deaths"] < 0).any():
+        raise ValueError("Forecast simulations contain invalid negative counts.")
+    return sims
+
+# ---- County and topology simulation summaries: exceedance probabilities, statewide induced rates, induced H1 summaries, and direct H1 scalar forecasts ----
+
+def summarize_county_simulations(sims: pd.DataFrame, hotspot_threshold: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summarize simulated county exceedance probabilities and exceeding-county counts.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    work = sims.copy()
+    work["exceeds_hotspot_threshold"] = work["deaths_per_capita"] > hotspot_threshold
+    county = (
+        work.groupby(["county", "horizon", "date"], as_index=False)
+        .agg(
+            exceedance_probability=("exceeds_hotspot_threshold", "mean"),
+            expected_deaths=("deaths", "mean"),
+            median_deaths=("deaths", "median"),
+            deaths_lower_50=("deaths", lambda x: float(np.quantile(x, 0.25))),
+            deaths_upper_50=("deaths", lambda x: float(np.quantile(x, 0.75))),
+            deaths_lower_80=("deaths", lambda x: float(np.quantile(x, 0.10))),
+            deaths_upper_80=("deaths", lambda x: float(np.quantile(x, 0.90))),
+            deaths_lower_95=("deaths", lambda x: float(np.quantile(x, 0.025))),
+            deaths_upper_95=("deaths", lambda x: float(np.quantile(x, 0.975))),
+            expected_rate=("deaths_per_capita", "mean"),
+            median_rate=("deaths_per_capita", "median"),
+            rate_lower_50=("deaths_per_capita", lambda x: float(np.quantile(x, 0.25))),
+            rate_upper_50=("deaths_per_capita", lambda x: float(np.quantile(x, 0.75))),
+            rate_lower_80=("deaths_per_capita", lambda x: float(np.quantile(x, 0.10))),
+            rate_upper_80=("deaths_per_capita", lambda x: float(np.quantile(x, 0.90))),
+            rate_lower_95=("deaths_per_capita", lambda x: float(np.quantile(x, 0.025))),
+            rate_upper_95=("deaths_per_capita", lambda x: float(np.quantile(x, 0.975))),
+        )
+    )
+    county["hotspot_threshold"] = hotspot_threshold
+    count_dist = (
+        work.groupby(["simulation", "horizon", "date"], as_index=False)
+        .agg(n_exceeding_counties=("exceeds_hotspot_threshold", "sum"))
+    )
+    expected = (
+        count_dist.groupby(["horizon", "date"], as_index=False)
+        .agg(
+            mean_exceeding_counties=("n_exceeding_counties", "mean"),
+            median_exceeding_counties=("n_exceeding_counties", "median"),
+            lower_80=("n_exceeding_counties", lambda x: float(np.quantile(x, 0.10))),
+            upper_80=("n_exceeding_counties", lambda x: float(np.quantile(x, 0.90))),
+            lower_95=("n_exceeding_counties", lambda x: float(np.quantile(x, 0.025))),
+            upper_95=("n_exceeding_counties", lambda x: float(np.quantile(x, 0.975))),
+            probability_at_least_one=("n_exceeding_counties", lambda x: float(np.mean(np.asarray(x) >= 1))),
+            probability_at_least_5=("n_exceeding_counties", lambda x: float(np.mean(np.asarray(x) >= 5))),
+            probability_at_least_10=("n_exceeding_counties", lambda x: float(np.mean(np.asarray(x) >= 10))),
+        )
+    )
+    return county, expected
+
+
+def summarize_statewide_from_county_sims(sims: pd.DataFrame) -> pd.DataFrame:
+    """Summarize statewide rates induced by simulated county count paths.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    sim_state = (
+        sims.groupby(["simulation", "horizon", "date"], as_index=False)
+        .agg(statewide_deaths=("deaths", "sum"), statewide_population=("population", "sum"))
+        .assign(statewide_rate=lambda x: x["statewide_deaths"] / x["statewide_population"])
+    )
+    return (
+        sim_state.groupby(["horizon", "date"])["statewide_rate"]
+        .apply(lambda x: interval_summary(x, "statewide_rate"))
+        .unstack()
+        .reset_index()
+        .rename(columns={"statewide_rate_mean": "predicted_rate", "statewide_rate_median": "predicted_median_rate"})
+    )
+
+
+def summarize_h1_simulations(sim_h1: pd.DataFrame, sim_ranked_h1: pd.DataFrame, h1_threshold_value: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summarize model-induced H1 simulations by horizon and rank.
+    This would be predicting future H1 if the predictions of future (county,month)
+    overdose rates above was actually trustworthy.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    h1 = sim_h1.copy()
+    h1["exceeds_h1_threshold"] = h1["max_h1_persistence"] > h1_threshold_value
+    h1_summary = (
+        h1.groupby(["horizon", "date"])["max_h1_persistence"]
+        .apply(lambda x: interval_summary(x, "max_h1"))
+        .unstack()
+        .reset_index()
+    )
+    h1_extra = h1.groupby(["horizon", "date"], as_index=False).agg(
+        mean_h1_point_count=("h1_point_count", "mean"),
+        median_top_ranked_total_persistence=("top_ranked_total_persistence", "median"),
+        prob_exceeds_h1_threshold=("exceeds_h1_threshold", "mean"),
+        n_topology_simulations=("simulation", "nunique"),
+    )
+    h1_summary = h1_summary.merge(h1_extra, on=["horizon", "date"], how="left")
+    ranked_summary = (
+        sim_ranked_h1.groupby(["horizon", "date", "rank"])["persistence"]
+        .apply(lambda x: interval_summary(x, "persistence"))
+        .unstack()
+        .reset_index()
+    )
+    return h1_summary, ranked_summary
+
+```
+
+The county-level negative-binomial model is not used for final forecasts below. We still keep a residual screen because the attempted county model is part of the forecasting story: it explains why the later sections focus on scalar statewide and scalar $H_1$ forecasting. This screen uses the held-out county forecast residuals created by the production chunk above, so the diagnostic is based on data not used to fit the model. We compute pooled lag-1 and lag-12 residual autocorrelation, countywise Ljung-Box failures after Benjamini-Hochberg adjustment, and monthly residual Moran's $I$. The last column, `passes_residual_screen`, is `True` only when the temporal and spatial residual checks are all mild enough that we would be willing to treat the remaining errors as approximately independent noise. In this section, all our models fail the residual tests for independence, but in later sections the pure time series models will pass the tests.
+
+```{python}
+#| label: county-nb-residual-screen-source
+#| eval: false
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.stats.multitest import multipletests
+
+forecast_dir = Path.cwd().resolve()
+if not (forecast_dir.parent / "data" / "county_drug_death.csv").exists():
+    forecast_dir = forecast_dir / "forecasting files"
+output_dir = forecast_dir / "forecasting_vineyards_outputs"
+county_holdouts = pd.read_csv(output_dir / "county_forecast_holdouts_all.csv", parse_dates=["date"])
+
+def _canonical_county_name(x):
+    """Normalize county labels for the residual-screen adjacency file.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return str(x).replace(" County, OH", "").replace(" County", "").strip().replace("Van Wert", "VanWert")
+
+def _load_edges(adjacency_path):
+    """Load county adjacency edges for Moran residual diagnostics.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    edges = set()
+    counties = set()
+    with open(adjacency_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            parts = [p.strip() for p in line.split() if p.strip()]
+            if not parts:
+                continue
+            county = _canonical_county_name(parts[0])
+            if county.lower() == "exterior":
+                continue
+            counties.add(county)
+            for nbr in parts[1:]:
+                nbr = _canonical_county_name(nbr)
+                if nbr.lower() == "exterior":
+                    continue
+                counties.add(nbr)
+                edges.add(tuple(sorted((county, nbr))))
+    return sorted(counties), sorted(edges)
+
+def _safe_corr(x, lag):
+    """Compute a lagged correlation when enough nonconstant data are available.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    x = pd.Series(x).dropna().astype(float)
+    if len(x) <= lag or x.std(ddof=1) <= 0:
+        return np.nan
+    return float(x.autocorr(lag=lag))
+
+def _moran_i(values, counties, edges):
+    """Compute Moran’s I for one vector of county residuals.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    v = pd.Series(values, index=counties).astype(float)
+    x = v - v.mean()
+    denom = float((x ** 2).sum())
+    if denom <= 0 or not edges:
+        return np.nan
+    numer = sum(float(x[a] * x[b]) for a, b in edges if a in x.index and b in x.index)
+    return float(len(counties) / len(edges) * numer / denom)
+
+def _moran_permutation_p(values, counties, edges, rng, n_perm=199):
+    """Compute a permutation p-value for Moran’s I.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    observed = _moran_i(values, counties, edges)
+    if not np.isfinite(observed):
+        return observed, np.nan
+    arr = np.asarray(pd.Series(values, index=counties).astype(float), dtype=float)
+    sims = []
+    for _ in range(n_perm):
+        sims.append(_moran_i(rng.permutation(arr), counties, edges))
+    sims = np.asarray(sims, dtype=float)
+    p = (1 + np.sum(np.abs(sims) >= abs(observed))) / (len(sims) + 1)
+    return observed, float(p)
+
+def build_county_residual_screen(county_holdouts, adjacency_path, output_path):
+    """Build the county negative-binomial residual-screen summary table.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    counties, edges = _load_edges(adjacency_path)
+    work = county_holdouts.copy()
+    work["county"] = work["county"].map(_canonical_county_name)
+    work["death_residual"] = work["observed_deaths"] - work["expected_deaths"]
+    work["rate_residual"] = work["observed_rate"] - work["expected_rate"]
+    rows = []
+    rng = np.random.default_rng(20260622)
+    for (experiment, train_end, holdout_year), group in work.groupby(["experiment", "train_end", "holdout_year"]):
+        group = group.sort_values(["county", "date"])
+        county_lb_p = []
+        county_lag1 = []
+        county_lag12 = []
+        for county, cgroup in group.groupby("county"):
+            resid = cgroup.sort_values("date")["death_residual"].astype(float)
+            county_lag1.append(_safe_corr(resid, 1))
+            county_lag12.append(_safe_corr(resid, 12))
+            if resid.notna().sum() >= 8 and resid.std(ddof=1) > 0:
+                lb = acorr_ljungbox(resid, lags=[min(3, max(1, len(resid) // 3))], return_df=True)
+                county_lb_p.append(float(lb["lb_pvalue"].iloc[0]))
+        if county_lb_p:
+            reject_lb = multipletests(county_lb_p, alpha=0.05, method="fdr_bh")[0]
+            prop_ljung_fail = float(np.mean(reject_lb))
+            n_ljung_fail = int(np.sum(reject_lb))
+        else:
+            prop_ljung_fail = np.nan
+            n_ljung_fail = 0
+        moran_rows = []
+        for date, mgroup in group.groupby("date"):
+            residual_by_county = mgroup.set_index("county")["rate_residual"].reindex(counties).fillna(0.0)
+            moran_i, moran_p = _moran_permutation_p(residual_by_county, counties, edges, rng)
+            moran_rows.append({"date": date, "moran_i": moran_i, "pvalue": moran_p})
+        moran_df = pd.DataFrame(moran_rows)
+        if len(moran_df) and moran_df["pvalue"].notna().any():
+            reject_moran = multipletests(moran_df["pvalue"].fillna(1.0), alpha=0.05, method="fdr_bh")[0]
+            prop_moran_fail = float(np.mean(reject_moran))
+            n_moran_fail = int(np.sum(reject_moran))
+            median_moran = float(moran_df["moran_i"].median())
+            mean_moran = float(moran_df["moran_i"].mean())
+        else:
+            prop_moran_fail = np.nan
+            n_moran_fail = 0
+            median_moran = np.nan
+            mean_moran = np.nan
+        pooled = group.sort_values(["county", "date"])["death_residual"]
+        pooled_lag1 = _safe_corr(pooled, 1)
+        pooled_lag12 = _safe_corr(pooled, 12)
+        passes = (
+            abs(pooled_lag1) < 0.10 if np.isfinite(pooled_lag1) else False
+        ) and (
+            abs(pooled_lag12) < 0.10 if np.isfinite(pooled_lag12) else False
+        ) and (prop_ljung_fail <= 0.10 if np.isfinite(prop_ljung_fail) else False) and (prop_moran_fail <= 0.10 if np.isfinite(prop_moran_fail) else False)
+        rows.append({
+            "experiment": experiment,
+            "train_end": train_end,
+            "holdout_year": int(holdout_year),
+            "pooled_lag1_residual_autocorrelation": pooled_lag1,
+            "pooled_lag12_residual_autocorrelation": pooled_lag12,
+            "county_lag1_residual_autocorrelation_median": float(np.nanmedian(county_lag1)),
+            "county_lag12_residual_autocorrelation_median": float(np.nanmedian(county_lag12)),
+            "n_counties_ljung_box_reject_bh_0_05": n_ljung_fail,
+            "prop_counties_ljung_box_reject_bh_0_05": prop_ljung_fail,
+            "mean_monthly_residual_morans_i": mean_moran,
+            "median_monthly_residual_morans_i": median_moran,
+            "n_months_residual_morans_i_reject_bh_0_05": n_moran_fail,
+            "prop_months_residual_morans_i_reject_bh_0_05": prop_moran_fail,
+            "passes_residual_screen": bool(passes),
+        })
+    screen = pd.DataFrame(rows)
+    screen.to_csv(output_path, index=False)
+    return screen
+
+county_residual_screen = build_county_residual_screen(
+    county_holdouts,
+    forecast_dir.parent / "data" / "ohio_neighbors.txt",
+    output_dir / "county_negative_binomial_residual_screen.csv",
+)
+county_residual_screen
+```
+
+
+In order for this model to produce trustworthy forecasts, it should leave no important residual spatiotemporal autocorrelation. We illustrate below how to check that, using the holdout data (the data not used in training the model). We pool model residuals within each holdout experiment and check whether the remaining errors look close enough to independent noise. The lag-1 residual autocorrelation is still large for each cutoff, so the residuals fail to be independent. The spatial Moran summaries are smaller, but the temporal dependence alone is enough so that we cannot forecast from this model.
+
+```{python}
+#| label: county-negative-binomial-residual-data
+county_residual_screen = read_derived_csv("county_negative_binomial_residual_screen.csv")
+```
+
+```{python}
+#| label: county-negative-binomial-residual-screen
+county_residual_screen.drop(columns=[
+    "county_lag12_residual_autocorrelation_median",
+    "n_counties_ljung_box_reject_bh_0_05",
+], errors="ignore")
+```
+
+Since we cannot forecast $D(c,t)$, we turn to forecasting statewide deaths per capita from its own past. This is easier, but it ignores county differences. Forecasting each of 88 county time series separately would ignore the spatiotemporal dependence documented in the other notebooks. Forecasting the max $H_1$ persistence, $M_t$, is a compromise: it reduces the full Ohio county surface to one time series, but the resulting forecasts still retain local information, rather than aggregating to the state level.
+
+## An Overview of Time Series Forecasting
+
+A time-series forecast uses observations through a cutoff date to predict values after that cutoff. The idea is to first fit a model that leaves random and independent residuals (with no further pattern), then continue the model forward. For example, if the model was $D_t = 0.9*D_{t-1} + \epsilon_t$ (where $\epsilon_t$ is the error term), then we could predict next month based on this month as $D_{t+1} = 0.9*D_t$ and we could predict the month after as $D_{t+2} = 0.9*\hat{D_{t+1}}$ where the hat notation means we use our prediction of $D_{t+1}$ since we would not know the true value yet when we made the prediction.
+
+There are entire books on time series models and forecasting [11, 17]. The kinds of parametric models we are interested in here are SARIMA models meaning Seasonal AutoRegressive Integrated Moving Average models. We fit such a model in three steps. First we apply a differencing transformation if needed to make the time series stationary, e.g., shifting focus from $D_t$ to a new time series $\Delta D_t = D_t - D_{t-1}$ for first-order differencing, or $\Delta_{12} D_t = D_t - D_{t-12}$ for seasonal differencing (since 12 months ago might tell us something about the current month, like if it's winter or summer). Note that if you could predict these transformed variables, you could also use them for forecasting $D_{t+h}$ for any $h$. This is the "integrated" part of SARIMA. Let's use $Y_t$ to denote our (possibly transformed) response variable. Next, we fit autoregressive terms like $Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + \phi_{12} Y_{t-12}$, etc. We choose which lagged terms to include based on partial autocorrelation plots (PACF), and we find the best-fitting values of the coefficients using maximum likelihood estimation. Next, we fit the moving average terms like $\psi_1 \epsilon_{t-1} + \psi_2 \epsilon_{t-2} + \psi_{12} \epsilon_{t-12}$ which allow previous shock events to influence future values. Now the lags are chosen using autocorreation plots (ACF) and again the $\psi$-terms are estimated using maximum likelihood estimation. 
+
+A fitted model is useful for forecasting only if the residuals look like random and independent noise. For SARIMA models we use the usual residual checks: the residual autocorrelation function should have no remaining pattern and the Ljung-Box test should fail to reject the null hypothesis of residual independence.
+
+For example, we found that a SARIMA(0,1,3)x(0,0,3)[12] model fits well to the monthly overdose death time series $D_t$. That means we transform so $Y_t = \Delta D_t$ then we model 
+$$Y_t = \psi_1 \epsilon_{t-1} +\psi_2 \epsilon_{t-2} +\psi_3 \epsilon_{t-3} +\psi_{12} \epsilon_{t-12} +\psi_{t-24} \epsilon_{t-24} +\psi_{t-36} \epsilon_{t-36} +\epsilon_t$$
+Often, we have multiple good-fitting models (that leave independent residuals). In that case, we compare them using the Akaite Information Criteria (AIC). The model with the lowest AIC is preferred, as a theorem in statistics implies that model should also have the best predictive accuracy. For more details, see [17].
+
+Note that forecast uncertainty grows with the time horizon: the model is not only uncertain about the next month, but also about the forecasted values that later months may depend on. We can make confidence intervals for forecasts using either bootstrapping or the normal distribution, if the residuals appear normal (visually and using standard statistical tests for normality, [17]).
+
+## Our forecasts for Ohio statewide mortality and max $H_1$ persistence
+
+The next non-executed source code shows how the scalar time-series diagnostics and residual-bootstrap forecast outputs are generated. They fit the SARIMAX residual-diagnostic models, run the nonparametric scalar holdouts, and save the selected forecast-band figures used below.
+
+```{python}
+#| label: scalar-time-series-forecast-source
+#| eval: false
+
+def sarima_statewide_forecast(train_state: pd.DataFrame, holdout_dates: list[pd.Timestamp]) -> pd.DataFrame:
+    """Fit and forecast the statewide-rate SARIMAX benchmark.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train_state.sort_values("date").set_index("date")["statewide_rate"].asfreq("MS")
+    rows = []
+    try:
+        model = SARIMAX(y, order=(1, 1, 1), seasonal_order=(1, 0, 1, 12), trend="c", enforce_stationarity=False, enforce_invertibility=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            result = model.fit(disp=False, maxiter=300)
+        forecast = result.get_forecast(steps=len(holdout_dates))
+        mean = np.asarray(forecast.predicted_mean, dtype=float)
+        ci80 = np.asarray(forecast.conf_int(alpha=0.20), dtype=float)
+        ci95 = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
+        for i, date in enumerate(holdout_dates):
+            rows.append({"model": "sarimax_statewide_rate", "horizon": i + 1, "date": date, "predicted_rate": float(mean[i]), "lower_80": float(ci80[i, 0]), "upper_80": float(ci80[i, 1]), "lower_95": float(ci95[i, 0]), "upper_95": float(ci95[i, 1]), "aic": float(result.aic), "bic": float(result.bic), "converged": True})
+    except Exception as exc:
+        for i, date in enumerate(holdout_dates):
+            rows.append({"model": "sarimax_statewide_rate", "horizon": i + 1, "date": date, "predicted_rate": np.nan, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan, "error": repr(exc), "converged": False})
+    return pd.DataFrame(rows)
+```
+
+We also provide the code below to do a SARIMA-style forecast of max $H_1$ persistence, discussed in the next section.
+```{python}
+#| label: direct-h1-scalar-forecast-source
+#| eval: false
+def direct_h1_scalar_forecast(train_h1: pd.DataFrame, holdout_dates: list[pd.Timestamp], h1_threshold_value: float) -> pd.DataFrame:
+    """Forecast maximum H1 persistence directly as a scalar time series.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    train = train_h1.sort_values("date").set_index("date")["max_h1_persistence"].asfreq("MS")
+    rows = []
+    y = train.to_numpy(dtype=float)
+    step_sd = float(np.std(np.diff(y), ddof=1)) if len(y) > 2 else float(np.std(y, ddof=1))
+    recent_mean = float(train.tail(12).mean())
+    last_value = float(train.iloc[-1])
+    for horizon, date in enumerate(holdout_dates, start=1):
+        for model, mean in [("h1_recent_12_month_average", recent_mean), ("h1_random_walk", last_value)]:
+            se = step_sd * math.sqrt(horizon)
+            rows.append({"model": model, "horizon": horizon, "date": date, "forecast_mean": mean, "lower_80": mean - 1.2816 * se, "upper_80": mean + 1.2816 * se, "lower_95": mean - 1.96 * se, "upper_95": mean + 1.96 * se, "prob_exceeds_h1_threshold": normal_tail_probability(h1_threshold_value, mean, se)})
+    try:
+        model = SARIMAX(train, order=(1, 0, 0), seasonal_order=(1, 0, 0, 12), trend="c", enforce_stationarity=False, enforce_invertibility=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            result = model.fit(disp=False, maxiter=300)
+        forecast = result.get_forecast(steps=len(holdout_dates))
+        mean = np.asarray(forecast.predicted_mean, dtype=float)
+        ci80 = np.asarray(forecast.conf_int(alpha=0.20), dtype=float)
+        ci95 = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
+        se = np.asarray(forecast.se_mean, dtype=float)
+        for i, date in enumerate(holdout_dates):
+            rows.append({"model": "h1_sarimax_scalar", "horizon": i + 1, "date": date, "forecast_mean": float(mean[i]), "lower_80": float(ci80[i, 0]), "upper_80": float(ci80[i, 1]), "lower_95": float(ci95[i, 0]), "upper_95": float(ci95[i, 1]), "prob_exceeds_h1_threshold": normal_tail_probability(h1_threshold_value, float(mean[i]), float(se[i])), "aic": float(result.aic), "bic": float(result.bic)})
+    except Exception as exc:
+        for i, date in enumerate(holdout_dates):
+            rows.append({"model": "h1_sarimax_scalar", "horizon": i + 1, "date": date, "forecast_mean": np.nan, "lower_80": np.nan, "upper_80": np.nan, "lower_95": np.nan, "upper_95": np.nan, "prob_exceeds_h1_threshold": np.nan, "error": repr(exc)})
+    return pd.DataFrame(rows)
+
+```
+
+The next code block carries out residual diagnostics: checking residual ACF for independence, normality plots, and summary tests.
+
+```{python}
+#| label: scalar-residual-diagnostic-figure-source
+#| eval: false
+
+fig, ax = plt.subplots(figsize=(6.5, 6))
+ax.scatter(statewide_predictions["statewide_rate"], statewide_predictions["predicted_rate"], s=18, alpha=0.6, color="#457b9d")
+lim = np.nanmax([statewide_predictions["statewide_rate"].max(), statewide_predictions["predicted_rate"].max()]) * 1.05
+ax.plot([0, lim], [0, lim], color="#333333", ls="--", lw=1)
+ax.set_xlim(0, lim)
+ax.set_ylim(0, lim)
+ax.set_title("Observed versus predicted statewide rates in completed-year holdouts")
+ax.set_xlabel("Observed deaths per capita")
+ax.set_ylabel("Predicted deaths per capita")
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"statewide_observed_vs_predicted_cv.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+fig, ax = plt.subplots(figsize=(6.5, 6))
+ax.scatter(county_predictions["observed_rate"], county_predictions["expected_rate"], s=11, alpha=0.35, color="#264653")
+lim = max(county_predictions["observed_rate"].max(), county_predictions["expected_rate"].max()) * 1.05
+ax.plot([0, lim], [0, lim], color="#a23b72", ls="--", lw=1)
+ax.set_xlim(0, lim)
+ax.set_ylim(0, lim)
+ax.set_title("Observed versus predicted county deaths per capita")
+ax.set_xlabel("Observed deaths per capita")
+ax.set_ylabel("Predicted mean deaths per capita")
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"county_observed_vs_predicted_cv.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+fig, ax = plt.subplots(figsize=(7, 5))
+for year, group in exceedance_calibration.groupby("holdout_year"):
+    group = group.dropna(subset=["mean_predicted_probability", "observed_frequency"]).sort_values("mean_predicted_probability")
+    ax.plot(group["mean_predicted_probability"], group["observed_frequency"], marker="o", lw=1.5, label=str(year))
+ax.plot([0, 1], [0, 1], color="#333333", ls="--", lw=1)
+ax.set_xlim(0, 1)
+ax.set_ylim(0, 1)
+ax.set_title("Hotspot exceedance calibration in completed-year holdouts")
+ax.set_xlabel("Mean predicted exceedance probability")
+ax.set_ylabel("Observed exceedance frequency")
+ax.legend(title="Holdout year")
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"exceedance_calibration_cv.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+# ---- Residual-diagnostic execution: fit scalar SARIMAX models and save diagnostic plots/tables ----
+
+for year in [2022, 2023]:
+    sub = expected_counts_holdout[expected_counts_holdout["holdout_year"].eq(year)].sort_values("date")
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.plot(sub["date"], sub["median_exceeding_counties"], marker="o", color="#264653", label="Median")
+    ax.fill_between(sub["date"], sub["lower_80"], sub["upper_80"], color="#e9c46a", alpha=0.35, label="80% interval")
+    ax.fill_between(sub["date"], sub["lower_95"], sub["upper_95"], color="#f4a261", alpha=0.18, label="95% interval")
+    observed_counts = county_predictions[county_predictions["holdout_year"].eq(year)].groupby("date")["observed_exceeds_hotspot_threshold"].sum().reset_index()
+    ax.plot(observed_counts["date"], observed_counts["observed_exceeds_hotspot_threshold"], marker="s", color="#a23b72", label="Observed")
+    ax.set_title(f"Number of counties above the hotspot threshold, {year} holdout")
+    ax.set_xlabel("Held-out month")
+    ax.set_ylabel("County count")
+    ax.legend()
+    fig.tight_layout()
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"expected_exceeding_counties_holdout_{year}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+for year in [2022, 2023]:
+    sub = h1_predictions[h1_predictions["holdout_year"].eq(year)].sort_values("date")
+    fig, ax = plt.subplots(figsize=(9, 4.6))
+    ax.plot(sub["date"], sub["observed_max_h1_persistence"], marker="o", color="#111111", label="Observed")
+    ax.plot(sub["date"], sub["max_h1_median"], marker="o", color="#2a9d8f", label="Forecast median")
+    ax.fill_between(sub["date"], sub["max_h1_lower_80"], sub["max_h1_upper_80"], color="#2a9d8f", alpha=0.18, label="80% interval")
+    ax.fill_between(sub["date"], sub["max_h1_lower_95"], sub["max_h1_upper_95"], color="#2a9d8f", alpha=0.09, label="95% interval")
+    ax.axhline(h1_threshold, color="#a23b72", ls=":", lw=1.1, label="Reference H1 threshold")
+    ax.set_title(f"Model-induced max H1 forecast, {year} holdout")
+    ax.set_xlabel("Held-out month")
+    ax.set_ylabel("Max finite H1 persistence")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"h1_max_persistence_holdout_{year}_forecast_band.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+# ---- Nonparametric scalar forecasts: mean, naive, drift, seasonal naive, recent same-month, and STL/LOESS residual bootstrap ----
+
+def target_series_for_diagnostics(target: str) -> pd.Series:
+    """Load a scalar series for SARIMAX residual diagnostics.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    if target == "statewide_rate":
+        return statewide_series(completed_df).set_index("date")["statewide_rate"].asfreq("MS")
+    if target == "max_h1_persistence":
+        return observed_h1.set_index("date")["max_h1_persistence"].asfreq("MS")
+    raise ValueError(target)
+
+
+def fit_sarimax_for_target(train_series: pd.Series, target: str):
+    """Fit the SARIMAX model used for scalar residual diagnostics.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    if target == "statewide_rate":
+        model = SARIMAX(
+            train_series,
+            order=(1, 1, 1),
+            seasonal_order=(1, 0, 1, 12),
+            trend="c",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+    elif target == "max_h1_persistence":
+        model = SARIMAX(
+            train_series,
+            order=(1, 0, 0),
+            seasonal_order=(1, 0, 0, 12),
+            trend="c",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+    else:
+        raise ValueError(target)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        return model.fit(disp=False, maxiter=300)
+
+
+def summarize_residual_normality(residuals: pd.Series, target: str, train_end: pd.Timestamp) -> dict[str, Any]:
+    """Summarize scalar SARIMAX residual normality and shape diagnostics.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    x = residuals.dropna().astype(float)
+    # The first few state-space residuals are often diffuse-initialization artifacts.
+    if len(x) > 24:
+        x = x.iloc[12:]
+    jb = stats.jarque_bera(x)
+    shapiro_stat, shapiro_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)
+    return {
+        "target": target,
+        "train_end": train_end.date().isoformat(),
+        "n_residuals": int(len(x)),
+        "mean_residual": float(x.mean()),
+        "sd_residual": float(x.std(ddof=1)),
+        "skewness": float(stats.skew(x, bias=False)),
+        "excess_kurtosis": float(stats.kurtosis(x, fisher=True, bias=False)),
+        "jarque_bera_statistic": float(jb.statistic),
+        "jarque_bera_pvalue": float(jb.pvalue),
+        "shapiro_wilk_statistic": float(shapiro_stat),
+        "shapiro_wilk_pvalue": float(shapiro_p),
+    }
+
+
+def plot_residual_diagnostics(residuals: pd.Series, target: str, train_end: pd.Timestamp) -> None:
+    """Save residual time-series, histogram, Q-Q, and ACF diagnostic plots.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    x = residuals.dropna().astype(float)
+    if len(x) > 24:
+        x = x.iloc[12:]
+    target_label = "statewide overdose rate" if target == "statewide_rate" else "maximum H1 persistence"
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.5))
+    axes[0, 0].plot(x.index, x.values, color="#264653", lw=1.2)
+    axes[0, 0].axhline(0, color="#333333", lw=0.8)
+    axes[0, 0].set_title("Residuals over time")
+    axes[0, 0].set_xlabel("Month")
+    axes[0, 0].set_ylabel("Residual")
+
+    axes[0, 1].hist(x.values, bins=24, density=True, alpha=0.55, color="#457b9d", edgecolor="white")
+    grid = np.linspace(float(x.min()), float(x.max()), 200)
+    if len(np.unique(x.values)) > 3:
+        kde = stats.gaussian_kde(x.values)
+        axes[0, 1].plot(grid, kde(grid), color="#a23b72", lw=1.8, label="kernel density")
+    normal_pdf = stats.norm.pdf(grid, loc=float(x.mean()), scale=float(x.std(ddof=1)))
+    axes[0, 1].plot(grid, normal_pdf, color="#111111", lw=1.2, ls="--", label="normal fit")
+    axes[0, 1].set_title("Histogram and density")
+    axes[0, 1].legend(fontsize=8)
+
+    stats.probplot(x.values, dist="norm", plot=axes[1, 0])
+    axes[1, 0].set_title("Normal Q-Q plot")
+
+    plot_acf(x.values, lags=min(36, max(1, len(x) // 4)), ax=axes[1, 1], zero=False, color="#264653")
+    axes[1, 1].set_title("Residual autocorrelation")
+
+    fig.suptitle(f"SARIMAX residual diagnostics for {target_label}, train through {train_end.date()}", y=0.995)
+    fig.tight_layout()
+    stem = f"parametric_residual_diagnostics_{target}_train_through_{train_end.year}_12"
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"{stem}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+# ---- Nonparametric forecast execution: run scalar holdouts, save metrics, and save comparison plots ----
+
+residual_rows = []
+for target in ["statewide_rate", "max_h1_persistence"]:
+    full_series = target_series_for_diagnostics(target)
+    for train_end in [pd.Timestamp("2021-12-01"), pd.Timestamp("2022-12-01")]:
+        train_series = full_series[full_series.index <= train_end]
+        fit = fit_sarimax_for_target(train_series, target)
+        residuals = pd.Series(np.asarray(fit.resid, dtype=float), index=train_series.index, name="residual")
+        residual_rows.append(summarize_residual_normality(residuals, target, train_end))
+        plot_residual_diagnostics(residuals, target, train_end)
+
+parametric_residual_diagnostics = pd.DataFrame(residual_rows)
+parametric_residual_diagnostics.to_csv(OUTPUT_DIR / "parametric_sarimax_residual_normality_diagnostics.csv", index=False)
+parametric_residual_diagnostics
+
+# ---- Selected forecast figures: save the two visually useful residual-bootstrap forecast-band plots ----
+
+NONPARAMETRIC_TARGETS = {
+    "statewide_rate": {
+        "label": "Statewide overdose deaths per capita",
+        "value_column": "statewide_rate",
+        "ylabel": "Deaths per capita",
+    },
+    "max_h1_persistence": {
+        "label": "Maximum finite H1 persistence",
+        "value_column": "max_h1_persistence",
+        "ylabel": "Max finite H1 persistence",
+    },
+}
+
+
+def target_series(target: str) -> pd.Series:
+    """Load one scalar target series for nonparametric forecasting.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    if target == "statewide_rate":
+        return statewide_series(completed_df).set_index("date")["statewide_rate"].asfreq("MS")
+    if target == "max_h1_persistence":
+        return observed_h1.set_index("date")["max_h1_persistence"].asfreq("MS")
+    raise ValueError(target)
+
+
+def empirical_interval_from_simulations(simulations: np.ndarray, point: np.ndarray) -> pd.DataFrame:
+    """Convert bootstrap simulations to point and quantile interval summaries.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    return pd.DataFrame({
+        "predicted": point,
+        "lower_50": np.quantile(simulations, 0.25, axis=0),
+        "upper_50": np.quantile(simulations, 0.75, axis=0),
+        "lower_80": np.quantile(simulations, 0.10, axis=0),
+        "upper_80": np.quantile(simulations, 0.90, axis=0),
+        "lower_90": np.quantile(simulations, 0.05, axis=0),
+        "upper_90": np.quantile(simulations, 0.95, axis=0),
+        "lower_95": np.quantile(simulations, 0.025, axis=0),
+        "upper_95": np.quantile(simulations, 0.975, axis=0),
+    })
+
+
+def forecast_mean_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000) -> pd.DataFrame:
+    """Forecast from the training mean with residual-bootstrap intervals.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float)
+    point = np.repeat(float(y.mean()), len(horizon_dates))
+    residuals = (y - y.mean()).to_numpy(dtype=float)
+    sims = point[None, :] + rng.choice(residuals, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = np.maximum(sims, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = "mean_residual_bootstrap"
+    return out
+
+
+def forecast_naive_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000) -> pd.DataFrame:
+    """Forecast by carrying the last value forward with bootstrapped innovations.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float)
+    point = np.repeat(float(y.iloc[-1]), len(horizon_dates))
+    one_step_residuals = y.diff().dropna().to_numpy(dtype=float)
+    innovations = rng.choice(one_step_residuals, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = point[None, :] + np.cumsum(innovations, axis=1)
+    sims = np.maximum(sims, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = "naive_residual_bootstrap"
+    return out
+
+
+def forecast_drift_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000) -> pd.DataFrame:
+    """Forecast with a drift term estimated from the training endpoints.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float)
+    drift = float((y.iloc[-1] - y.iloc[0]) / max(len(y) - 1, 1))
+    horizons = np.arange(1, len(horizon_dates) + 1)
+    point = float(y.iloc[-1]) + horizons * drift
+    one_step_residuals = (y.diff().dropna() - drift).to_numpy(dtype=float)
+    innovations = rng.choice(one_step_residuals, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = point[None, :] + np.cumsum(innovations, axis=1)
+    sims = np.maximum(sims, 0.0)
+    point = np.maximum(point, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = "drift_residual_bootstrap"
+    return out
+
+
+def forecast_seasonal_naive_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000, period: int = 12) -> pd.DataFrame:
+    """Forecast each month from its most recent same-month observation.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float)
+    point = []
+    for date in horizon_dates:
+        candidates = y[y.index.month == date.month]
+        point.append(float(candidates.iloc[-1]))
+    point = np.asarray(point, dtype=float)
+    seasonal_residuals = (y - y.shift(period)).dropna().to_numpy(dtype=float)
+    if len(seasonal_residuals) == 0:
+        seasonal_residuals = (y - y.mean()).to_numpy(dtype=float)
+    sims = point[None, :] + rng.choice(seasonal_residuals, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = np.maximum(sims, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = "seasonal_naive_residual_bootstrap"
+    return out
+
+
+def forecast_recent_same_month_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000, recent_years: int = 5) -> pd.DataFrame:
+    """Forecast from recent same-calendar-month averages.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float)
+    point = []
+    residuals = []
+    for date in horizon_dates:
+        candidates = y[y.index.month == date.month].tail(recent_years)
+        month_mean = float(candidates.mean())
+        point.append(month_mean)
+        residuals.extend((candidates - month_mean).to_list())
+    residuals = np.asarray(residuals, dtype=float)
+    if len(residuals) < 4 or np.allclose(residuals, 0):
+        residuals = (y - y.rolling(12, min_periods=1).mean()).dropna().to_numpy(dtype=float)
+    point = np.asarray(point, dtype=float)
+    sims = point[None, :] + rng.choice(residuals, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = np.maximum(sims, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = f"recent_{recent_years}_year_same_month_bootstrap"
+    return out
+
+
+def forecast_stl_loess_bootstrap(train: pd.Series, horizon_dates: list[pd.Timestamp], rng: np.random.Generator, n_bootstrap: int = 3000, period: int = 12) -> pd.DataFrame:
+    """Forecast from STL seasonality and a LOESS-smoothed local trend.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = train.dropna().astype(float).asfreq("MS")
+    stl = STL(y, period=period, robust=True).fit()
+    trend = pd.Series(stl.trend, index=y.index)
+    seasonal = pd.Series(stl.seasonal, index=y.index)
+    remainder = pd.Series(stl.resid, index=y.index).dropna().to_numpy(dtype=float)
+
+    t = np.arange(len(y), dtype=float)
+    smooth = lowess(y.to_numpy(dtype=float) - seasonal.to_numpy(dtype=float), t, frac=0.20, return_sorted=False)
+    recent_diffs = np.diff(smooth[-min(36, len(smooth)):])
+    local_drift = float(np.median(recent_diffs)) if len(recent_diffs) else 0.0
+    horizons = np.arange(1, len(horizon_dates) + 1, dtype=float)
+    trend_forecast = float(smooth[-1]) + horizons * local_drift
+
+    month_map = seasonal.groupby(seasonal.index.month).apply(lambda s: float(s.tail(3).mean()))
+    seasonal_forecast = np.asarray([month_map.loc[d.month] for d in horizon_dates], dtype=float)
+    point = np.maximum(trend_forecast + seasonal_forecast, 0.0)
+    if len(remainder) < 4 or np.allclose(remainder, 0):
+        remainder = (y - y.mean()).to_numpy(dtype=float)
+    sims = point[None, :] + rng.choice(remainder, size=(n_bootstrap, len(horizon_dates)), replace=True)
+    sims = np.maximum(sims, 0.0)
+    out = empirical_interval_from_simulations(sims, point)
+    out["model"] = "stl_loess_residual_bootstrap"
+    return out
+
+
+def run_nonparametric_holdout(target: str, train_end: pd.Timestamp, holdout_year: int, n_bootstrap: int = 3000) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run nonparametric scalar forecasts for one target and holdout year.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    y = target_series(target)
+    train = y[y.index <= train_end]
+    observed = y[(y.index >= pd.Timestamp(f"{holdout_year}-01-01")) & (y.index <= pd.Timestamp(f"{holdout_year}-12-01"))]
+    horizon_dates = list(observed.index)
+    seed_offset = 10_000 + holdout_year + (0 if target == "statewide_rate" else 100)
+    rng = np.random.default_rng(CONFIG["random_seed"] + seed_offset)
+    frames = []
+    for fn in [
+        forecast_mean_bootstrap,
+        forecast_naive_bootstrap,
+        forecast_drift_bootstrap,
+        forecast_seasonal_naive_bootstrap,
+        forecast_recent_same_month_bootstrap,
+        forecast_stl_loess_bootstrap,
+    ]:
+        frame = fn(train, horizon_dates, rng, n_bootstrap=n_bootstrap)
+        frame["target"] = target
+        frame["train_end"] = train_end
+        frame["holdout_year"] = holdout_year
+        frame["horizon"] = np.arange(1, len(horizon_dates) + 1)
+        frame["date"] = horizon_dates
+        frame["observed"] = observed.to_numpy(dtype=float)
+        frames.append(frame)
+    forecasts = pd.concat(frames, ignore_index=True)
+    metrics = []
+    for model_name, group in forecasts.groupby("model"):
+        metrics.append({
+            "target": target,
+            "train_end": train_end.date().isoformat(),
+            "holdout_year": holdout_year,
+            "model": model_name,
+            "mae": mae(group["observed"], group["predicted"]),
+            "rmse": rmse(group["observed"], group["predicted"]),
+            "coverage_80": float(np.mean((group["observed"] >= group["lower_80"]) & (group["observed"] <= group["upper_80"]))),
+            "coverage_95": float(np.mean((group["observed"] >= group["lower_95"]) & (group["observed"] <= group["upper_95"]))),
+        })
+    return forecasts, pd.DataFrame(metrics)
+
+
+def plot_nonparametric_best_forecast(forecasts: pd.DataFrame, metrics: pd.DataFrame, target: str, holdout_year: int) -> None:
+    """Save the lowest-RMSE nonparametric forecast plot.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    best = metrics.sort_values(["rmse", "mae"], ascending=[True, True]).iloc[0]
+    model_name = best["model"]
+    plot_df = forecasts[forecasts["model"].eq(model_name)].sort_values("date")
+    y = target_series(target)
+    train_end = pd.Timestamp(best["train_end"])
+    history = y[(y.index >= train_end - pd.DateOffset(years=5)) & (y.index <= train_end)]
+    observed_holdout = pd.Series(plot_df["observed"].to_numpy(dtype=float), index=pd.to_datetime(plot_df["date"]))
+    observed_line = pd.concat([history.tail(1), observed_holdout])
+    label = NONPARAMETRIC_TARGETS[target]["label"]
+    ylabel = NONPARAMETRIC_TARGETS[target]["ylabel"]
+    readable_model = model_name.replace("_", " ")
+
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.plot(history.index, history.values, color="#111111", lw=1.4, alpha=0.75, label="Training history")
+    ax.plot(observed_line.index, observed_line.values, color="#111111", marker="o", lw=1.8, label="Observed through holdout")
+    ax.plot(plot_df["date"], plot_df["predicted"], color="#2a9d8f", marker="o", lw=1.7, label=f"Forecast: {readable_model}")
+    ax.fill_between(plot_df["date"], plot_df["lower_80"], plot_df["upper_80"], color="#2a9d8f", alpha=0.18, label="80% bootstrap interval")
+    ax.fill_between(plot_df["date"], plot_df["lower_95"], plot_df["upper_95"], color="#2a9d8f", alpha=0.09, label="95% bootstrap interval")
+    ax.axvline(train_end, color="#666666", lw=1, ls=":")
+    ax.set_title(f"Lowest-RMSE nonparametric forecast for {label}, {holdout_year} holdout\nSelected model: {readable_model}")
+    ax.set_xlabel("Month")
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    stem = f"nonparametric_{target}_holdout_{holdout_year}_forecast_band"
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"{stem}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+
+def plot_nonparametric_model_comparison(forecasts: pd.DataFrame, target: str, holdout_year: int) -> None:
+    """Save a point-forecast comparison plot across nonparametric models.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    label = NONPARAMETRIC_TARGETS[target]["label"]
+    ylabel = NONPARAMETRIC_TARGETS[target]["ylabel"]
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    observed = forecasts.drop_duplicates("date").sort_values("date")
+    train_end = pd.Timestamp(observed["train_end"].iloc[0])
+    y = target_series(target)
+    history = y[(y.index >= train_end - pd.DateOffset(years=5)) & (y.index <= train_end)]
+    observed_holdout = pd.Series(observed["observed"].to_numpy(dtype=float), index=pd.to_datetime(observed["date"]))
+    observed_line = pd.concat([history.tail(1), observed_holdout])
+    ax.plot(history.index, history.values, color="#111111", lw=1.1, alpha=0.55, label="Training history")
+    ax.plot(observed_line.index, observed_line.values, color="#111111", marker="o", lw=1.8, label="Observed through holdout")
+    colors = ["#457b9d", "#2a9d8f", "#e76f51", "#a23b72", "#6a4c93", "#8d99ae"]
+    for color, (model_name, group) in zip(colors, forecasts.groupby("model")):
+        group = group.sort_values("date")
+        ax.plot(group["date"], group["predicted"], lw=1.2, alpha=0.9, color=color, label=model_name.replace("_", " "))
+    ax.axvline(train_end, color="#666666", lw=1, ls=":")
+    ax.set_title(f"Nonparametric point forecast comparison for {label}, {holdout_year} holdout")
+    ax.set_xlabel("Held-out month")
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=7, ncol=2)
+    fig.tight_layout()
+    stem = f"nonparametric_{target}_holdout_{holdout_year}_model_comparison"
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"{stem}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+```
+
+
+The function below loads the two scalar time series that we will forecast: statewide deaths per capita and maximum $H_1$ persistence.
+
+```{python}
+#| label: scalar-series-loaders
+def parse_month_label(label: str) -> tuple[int, int]:
+    """Parse a wide monthly column label of the form year_month.
+
+    Args:
+        label: Month label such as ``2007_1``.
+
+    Returns:
+        A pair ``(year, month)``.
+    """
+    year_text, month_text = str(label).split("_")
+    return int(year_text), int(month_text)
+
+
+def canonical_county_name(series: pd.Series) -> pd.Series:
+    """Normalize county labels so the data files and Ohio complex agree.
+
+    Args:
+        series: County-name column.
+
+    Returns:
+        County names with suffixes and spacing normalized.
+    """
+    return (
+        series.astype(str)
+        .str.replace(r"\s+County,\s*OH$", "", regex=True)
+        .str.replace(r"\s+County$", "", regex=True)
+        .str.strip()
+        .replace({"Van Wert": "VanWert"})
+    )
+
+
+def load_statewide_rate_series() -> pd.Series:
+    """Construct the statewide deaths-per-capita series.
+
+    Returns:
+        Monthly statewide overdose deaths divided by statewide population.
+    """
+    counts = pd.read_csv(FORECAST_DIR.parent / "data" / "county_drug_death.csv")
+    if "county" not in counts.columns:
+        counts = counts.rename(columns={counts.columns[0]: "county"})
+    counts["county"] = canonical_county_name(counts["county"])
+    counts = counts[~counts["county"].str.lower().isin({"total", "ohio", "statewide"})].copy()
+
+    pop_path = FORECAST_DIR.parent / "data" / "ohio_county_populations.csv"
+    pop = pd.read_csv(pop_path)
+    if "county" not in pop.columns:
+        pop = pop.rename(columns={pop.columns[0]: "county"})
+    pop["county"] = canonical_county_name(pop["county"])
+
+    rows = []
+    month_cols = [c for c in counts.columns if "_" in str(c)]
+    for col in month_cols:
+        year, month = parse_month_label(col)
+        deaths = pd.to_numeric(counts[col], errors="coerce").sum()
+        if str(year) in pop.columns:
+            population = pd.to_numeric(pop[str(year)], errors="coerce").sum()
+        else:
+            population = np.nan
+        rows.append({"date": pd.Timestamp(year=year, month=month, day=1), "statewide_rate": deaths / population})
+    series = pd.DataFrame(rows).sort_values("date").set_index("date")["statewide_rate"]
+    return series.asfreq("MS")
+
+
+def load_max_h1_series() -> pd.Series:
+    """Load the historical maximum finite H1 persistence series.
+
+    Returns:
+        Monthly maximum finite H1 persistence indexed by month.
+    """
+    h1 = read_derived_csv("historical_h1_persistence_summary.csv", parse_dates=["date"])
+    value_col = "max_h1_persistence" if "max_h1_persistence" in h1.columns else "observed_max_h1_persistence"
+    return h1.sort_values("date").set_index("date")[value_col].astype(float).asfreq("MS")
+
+statewide_rate_series = load_statewide_rate_series()
+max_h1_series = load_max_h1_series()
+
+```
+
+## Checking our SARIMA Models
+
+To keep this file focused on forecasting, we did our model fitting elsewhere. We made ACFs, PACFs, used the auto.arima() function, and tried several models. Below, we present certain good models, show that their residuals appear independent, and compare them using AIC.
+
+The next cell fits a small SARIMA candidate set for each scalar target and each main cutoff. It reports AIC and the Ljung-Box p-value at lag 24. We keep a candidate only if the numerical fit converges and the Ljung-Box p-value is at least 0.05. This is not a proof that the residuals are independent, but it is a useful screen against obvious leftover autocorrelation. The scalar series are rescaled before fitting to avoid numerical problems caused by very small deaths-per-capita and persistence values.
+
+```{python}
+#| label: sarima-candidate-selection
+SARIMA_CANDIDATES = [
+    {"name": "SARIMA(1,0,0)(1,0,0)[12]", "order": (1, 0, 0), "seasonal_order": (1, 0, 0, 12), "trend": "c"},
+    {"name": "SARIMA(1,0,1)(1,0,0)[12]", "order": (1, 0, 1), "seasonal_order": (1, 0, 0, 12), "trend": "c"},
+    {"name": "SARIMA(1,1,1)(1,0,1)[12]", "order": (1, 1, 1), "seasonal_order": (1, 0, 1, 12), "trend": "c"},
+    {"name": "SARIMA(0,1,1)(0,1,1)[12]", "order": (0, 1, 1), "seasonal_order": (0, 1, 1, 12), "trend": "n"},
+    {"name": "SARIMA(0,1,1)(1,0,0)[12]", "order": (0, 1, 1), "seasonal_order": (1, 0, 0, 12), "trend": "n"},
+]
+
+
+def fit_sarima_candidates(series: pd.Series, target: str, train_end: pd.Timestamp) -> pd.DataFrame:
+    """Fit SARIMA candidates and summarize residual diagnostics.
+
+    Args:
+        series: Scalar monthly time series to model.
+        target: Name of the scalar target.
+        train_end: Last month included in the training period.
+
+    Returns:
+        One row per SARIMA candidate with AIC, convergence status, and Ljung-Box results.
+    """
+    raw = series[series.index <= train_end].dropna().astype(float)
+    scale = 100_000.0
+    y = raw * scale
+    rows = []
+    for spec in SARIMA_CANDIDATES:
+        try:
+            model = SARIMAX(
+                y,
+                order=spec["order"],
+                seasonal_order=spec["seasonal_order"],
+                trend=spec["trend"],
+                enforce_stationarity=False,
+                enforce_invertibility=False,
+            )
+            result = model.fit(disp=False, maxiter=500)
+            resid = pd.Series(result.resid, index=y.index).replace([np.inf, -np.inf], np.nan).dropna()
+            lag = min(24, max(1, len(resid) // 5))
+            lb = acorr_ljungbox(resid, lags=[lag], return_df=True)
+            converged = bool(getattr(result, "mle_retvals", {}).get("converged", True))
+            lb_pass = bool(lb["lb_pvalue"].iloc[0] >= 0.05)
+            rows.append({
+                "target": target,
+                "train_end": train_end.date().isoformat(),
+                "model": spec["name"],
+                "scale_used_for_fit": scale,
+                "aic": float(result.aic),
+                "bic": float(result.bic),
+                "ljung_box_lag": lag,
+                "ljung_box_pvalue": float(lb["lb_pvalue"].iloc[0]),
+                "converged": converged,
+                "passes_ljung_box_0_05": lb_pass,
+                "passes_sarima_screen": bool(converged and lb_pass),
+            })
+        except Exception as exc:
+            rows.append({
+                "target": target,
+                "train_end": train_end.date().isoformat(),
+                "model": spec["name"],
+                "scale_used_for_fit": scale,
+                "aic": np.nan,
+                "bic": np.nan,
+                "ljung_box_lag": np.nan,
+                "ljung_box_pvalue": np.nan,
+                "converged": False,
+                "passes_ljung_box_0_05": False,
+                "passes_sarima_screen": False,
+                "error": str(exc),
+            })
+    return pd.DataFrame(rows)
+
+sarima_selection = pd.concat([
+    fit_sarima_candidates(statewide_rate_series, "statewide_rate", pd.Timestamp("2021-12-01")),
+    fit_sarima_candidates(statewide_rate_series, "statewide_rate", pd.Timestamp("2022-12-01")),
+    fit_sarima_candidates(max_h1_series, "max_h1_persistence", pd.Timestamp("2021-12-01")),
+    fit_sarima_candidates(max_h1_series, "max_h1_persistence", pd.Timestamp("2022-12-01")),
+], ignore_index=True)
+
+sarima_selection.to_csv(OUTPUT_DIR / "sarima_candidate_selection.csv", index=False)
+retained_sarima_selection = sarima_selection[
+    sarima_selection["passes_sarima_screen"].fillna(False)
+].copy()
+retained_sarima_selection = retained_sarima_selection[[
+    "target", "train_end", "model", "aic", "ljung_box_lag", "ljung_box_pvalue",
+    "converged", "passes_ljung_box_0_05", "passes_sarima_screen"
+]].sort_values(["target", "train_end", "aic"])
+retained_sarima_selection
+```
+
+The table above shows several strong candidates: models that converged and passed the Ljung-Box test. We compare the models using AIC and forecast accuracy below. For selected models, we illustrate how to check the residuals for normality.
+
+```{python}
+#| label: sarimax-residual-diagnostic-data
+parametric_residual_diagnostics = read_derived_csv("parametric_sarimax_residual_normality_diagnostics.csv")
+```
+
+```{python}
+#| label: sarimax-residual-diagnostic-summary
+parametric_residual_diagnostics
+```
+
+The selected residual plots below come from the source code in this section. Broadly speaking, they show that the residuals do look random, the ACF plot shows no further temporal autocorrelation, and the residuals appear normal. Hence, when forecasting from these models, the normal distribution can be used to create forecasting intervals (although when we forecast below, we use a non-parametric bootstrapping approach that also works for our non-parametric forecasts).
+
+```{python}
+#| label: sarimax-residual-diagnostic-figures
+for name in [
+    "parametric_residual_diagnostics_statewide_rate_train_through_2021_12.png",
+    "parametric_residual_diagnostics_statewide_rate_train_through_2022_12.png",
+    "parametric_residual_diagnostics_max_h1_persistence_train_through_2021_12.png",
+    "parametric_residual_diagnostics_max_h1_persistence_train_through_2022_12.png",
+]:
+    display(Image(filename=str(FIGURE_DIR / name)))
+```
+
+## Residual-Bootstrap Forecast Intervals
+
+The selected forecast figures below use residual-bootstrap prediction intervals, which we now explain. The starting identity is
+
+$$
+y_t = \hat y_t + e_t.
+$$
+
+For a future month, the forecasting rule gives $\hat y_{T+h}$, but the future error $e_{T+h}$ is unknown. The bootstrap idea is to use the fitted residuals from the training period as an empirical stand-in for future forecast errors. We repeatedly sample residuals with replacement, add them to the point forecast, and obtain many possible future values for each horizon. The interval is then read from empirical quantiles of those simulated future values. A 90% interval, for example, runs from the 5th to the 95th percentiles, cutting off the most extreme 5% from each tail.
+
+These prediction intervals do not require residual normality. They do require the training residuals to be a reasonable picture of future forecast errors. If residuals have strong remaining autocorrelation, changing variance, or a few dominant outliers, then a simple residual bootstrap can be misleading. This is why we still inspect residual plots even when we do not use normal-theory intervals.
+
+## Cross Validation Metrics for Forecast Accuracy
+
+We use completed-year cross validation. Experiment A trains through December 2021 and forecasts January-December 2022. This is most defensible, since the 2023 data was still preliminary when we downloaded it. Experiment B trains through December 2022 and forecasts January-December 2023. This is valuable, but it's hard to check if the forecasts are good, since the 2023 data was preliminary and might have changed due to death investigations. For this reason, when looking at the overdose data, we report Experiment A.
+
+The main tracking number is `heldout_correlation_squared`, the squared Pearson correlation between the 12 held-out observations and the 12 point forecasts. This number is between 0 and 1 when the correlation is defined. It asks whether the forecast follows the month-to-month pattern in the held-out year. We also report MAE and RMSE, which measure the size of the forecast errors in the original units, and coverage columns for intervals. The columns `coverage_80` and `coverage_95` are the fractions of holdout months whose observed value lies inside the 80% and 95% prediction intervals. Since the 80% interval is narrower, its coverage can be smaller than the 95% coverage.
+
+The next code block runs the holdout experiment, i.e., tests the models above (trained on the training data) on the holdout test data.
+
+```{python}
+#| label: cross-validation-output-source
+#| eval: false
+def run_holdout_experiment(spec: dict[str, Any], base_seed: int) -> dict[str, pd.DataFrame | CountModelFit]:
+    """Run one completed-year training/holdout forecasting experiment.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        A dictionary of prediction, metric, diagnostic, and model-summary dataframes.
+    """
+    experiment = spec["experiment"]
+    train_end = spec["train_end"]
+    holdout_start = spec["holdout_start"]
+    holdout_end = spec["holdout_end"]
+    train = df_all[df_all["date"] <= train_end].copy()
+    holdout = df_all[(df_all["date"] >= holdout_start) & (df_all["date"] <= holdout_end)].copy()
+    holdout_dates = sorted(holdout["date"].unique())
+    hotspot_threshold = choose_hotspot_threshold(train)
+    rng = np.random.default_rng(base_seed)
+
+    train_state = statewide_series(train)
+    observed_state = statewide_series(holdout)[["date", "statewide_rate", "statewide_deaths"]]
+    state_preds = pd.concat([
+        baseline_statewide_forecasts(train_state, holdout_dates),
+        sarima_statewide_forecast(train_state, holdout_dates),
+    ], ignore_index=True)
+
+    fit = fit_count_model(train)
+    sims = simulate_paths(train, fit, len(holdout_dates), CONFIG["n_holdout_simulations"], rng, observed_df_for_population=holdout)
+    county_pred, expected_counts = summarize_county_simulations(sims, hotspot_threshold)
+    model_state = summarize_statewide_from_county_sims(sims)
+    model_state = model_state.rename(columns={"statewide_rate_lower_80": "lower_80", "statewide_rate_upper_80": "upper_80", "statewide_rate_lower_95": "lower_95", "statewide_rate_upper_95": "upper_95"})
+    model_state["model"] = "county_negative_binomial_induced_statewide"
+    model_state = model_state[["model", "horizon", "date", "predicted_rate", "predicted_median_rate", "lower_80", "upper_80", "lower_95", "upper_95"]]
+    state_preds = pd.concat([state_preds, model_state], ignore_index=True)
+    state_preds = state_preds.merge(observed_state, on="date", how="left", validate="many_to_one")
+    state_preds["experiment"] = experiment
+    state_preds["train_end"] = train_end
+    state_preds["holdout_start"] = holdout_start
+    state_preds["holdout_end"] = holdout_end
+
+    state_metrics = []
+    for model_name, group in state_preds.dropna(subset=["predicted_rate"]).groupby("model"):
+        observed_sd = float(group["statewide_rate"].std(ddof=0))
+        predicted_sd = float(group["predicted_rate"].std(ddof=0))
+        correlation_defined = len(group) > 1 and observed_sd > 1e-15 and predicted_sd > 1e-15
+        corr = group[["statewide_rate", "predicted_rate"]].corr().iloc[0, 1] if correlation_defined else np.nan
+        state_metrics.append({
+            "experiment": experiment,
+            "train_end": train_end.date().isoformat(),
+            "holdout_year": int(holdout_start.year),
+            "model": model_name,
+            "mae_statewide_rate": mae(group["statewide_rate"], group["predicted_rate"]),
+            "rmse_statewide_rate": rmse(group["statewide_rate"], group["predicted_rate"]),
+            "observed_sd_statewide_rate": observed_sd,
+            "predicted_sd_statewide_rate": predicted_sd,
+            "correlation_squared_defined": bool(correlation_defined),
+            "correlation_squared_statewide_rate": float(corr ** 2) if np.isfinite(corr) else np.nan,
+        })
+
+    obs_county = holdout[["county", "date", "deaths", "deaths_per_capita"]].rename(columns={"deaths": "observed_deaths", "deaths_per_capita": "observed_rate"})
+    county_joined = county_pred.merge(obs_county, on=["county", "date"], how="left", validate="one_to_one")
+    if county_joined[["observed_deaths", "observed_rate"]].isna().any().any():
+        raise ValueError(f"Holdout {experiment} has incomplete county observed joins.")
+    county_joined["experiment"] = experiment
+    county_joined["train_end"] = train_end
+    county_joined["holdout_year"] = int(holdout_start.year)
+
+    county_metrics = pd.DataFrame([{
+        "experiment": experiment,
+        "train_end": train_end.date().isoformat(),
+        "holdout_year": int(holdout_start.year),
+        "model": "county_negative_binomial",
+        "n_county_months": len(county_joined),
+        "n_simulations": CONFIG["n_holdout_simulations"],
+        "hotspot_threshold": hotspot_threshold,
+        "mae_deaths": mae(county_joined["observed_deaths"], county_joined["expected_deaths"]),
+        "rmse_deaths": rmse(county_joined["observed_deaths"], county_joined["expected_deaths"]),
+        "mae_rate": mae(county_joined["observed_rate"], county_joined["expected_rate"]),
+        "rmse_rate": rmse(county_joined["observed_rate"], county_joined["expected_rate"]),
+        "rate_correlation": float(county_joined[["expected_rate", "observed_rate"]].corr().iloc[0, 1]),
+        "deaths_coverage_50": float(np.mean((county_joined["observed_deaths"] >= county_joined["deaths_lower_50"]) & (county_joined["observed_deaths"] <= county_joined["deaths_upper_50"]))),
+        "deaths_coverage_80": float(np.mean((county_joined["observed_deaths"] >= county_joined["deaths_lower_80"]) & (county_joined["observed_deaths"] <= county_joined["deaths_upper_80"]))),
+        "deaths_coverage_95": float(np.mean((county_joined["observed_deaths"] >= county_joined["deaths_lower_95"]) & (county_joined["observed_deaths"] <= county_joined["deaths_upper_95"]))),
+        "rate_coverage_50": float(np.mean((county_joined["observed_rate"] >= county_joined["rate_lower_50"]) & (county_joined["observed_rate"] <= county_joined["rate_upper_50"]))),
+        "rate_coverage_80": float(np.mean((county_joined["observed_rate"] >= county_joined["rate_lower_80"]) & (county_joined["observed_rate"] <= county_joined["rate_upper_80"]))),
+        "rate_coverage_95": float(np.mean((county_joined["observed_rate"] >= county_joined["rate_lower_95"]) & (county_joined["observed_rate"] <= county_joined["rate_upper_95"]))),
+    }])
+
+    observed_exceeds = county_joined["observed_rate"] > hotspot_threshold
+    county_joined["observed_exceeds_hotspot_threshold"] = observed_exceeds
+    brier = float(np.mean((county_joined["exceedance_probability"] - observed_exceeds.astype(float)) ** 2))
+    exceedance_metrics = []
+    sim_counts = sims.assign(exceeds_hotspot_threshold=lambda x: x["deaths_per_capita"] > hotspot_threshold).groupby("simulation").agg(n_exceeding_county_months=("exceeds_hotspot_threshold", "sum")).reset_index()
+    for cutoff in [0.25, 0.50, 0.75]:
+        predicted = county_joined["exceedance_probability"] >= cutoff
+        tp = int((predicted & observed_exceeds).sum())
+        fp = int((predicted & ~observed_exceeds).sum())
+        fn = int((~predicted & observed_exceeds).sum())
+        exceedance_metrics.append({
+            "experiment": experiment,
+            "train_end": train_end.date().isoformat(),
+            "holdout_year": int(holdout_start.year),
+            "model": "county_negative_binomial",
+            "hotspot_threshold": hotspot_threshold,
+            "probability_cutoff": cutoff,
+            "brier_score": brier,
+            "observed_exceeding_county_months": int(observed_exceeds.sum()),
+            "predicted_mean_exceeding_county_months": float(sim_counts["n_exceeding_county_months"].mean()),
+            "predicted_median_exceeding_county_months": float(sim_counts["n_exceeding_county_months"].median()),
+            "predicted_lower_80_exceeding_county_months": float(sim_counts["n_exceeding_county_months"].quantile(0.10)),
+            "predicted_upper_80_exceeding_county_months": float(sim_counts["n_exceeding_county_months"].quantile(0.90)),
+            "precision": float(tp / max(tp + fp, 1)),
+            "recall": float(tp / max(tp + fn, 1)),
+            "n_predicted_positive": int(predicted.sum()),
+        })
+
+    bins = pd.IntervalIndex.from_tuples([(0.0, 0.10), (0.10, 0.25), (0.25, 0.50), (0.50, 0.75), (0.75, 1.0)], closed="right")
+    calibration = county_joined.copy()
+    calibration["probability_bin"] = pd.cut(calibration["exceedance_probability"], bins=bins, include_lowest=True)
+    calibration = calibration.groupby("probability_bin", observed=True).agg(
+        n=("county", "size"),
+        mean_predicted_probability=("exceedance_probability", "mean"),
+        observed_frequency=("observed_exceeds_hotspot_threshold", "mean"),
+    ).reset_index()
+    calibration["experiment"] = experiment
+    calibration["holdout_year"] = int(holdout_start.year)
+    calibration["bin_left"] = calibration["probability_bin"].map(lambda x: x.left)
+    calibration["bin_right"] = calibration["probability_bin"].map(lambda x: x.right)
+    calibration = calibration.drop(columns=["probability_bin"])
+
+    sim_h1, sim_ranked_h1, h1_failures = compute_simulated_h1(sims, ps, county_order, CONFIG["top_rank_count"], f"holdout_{experiment}_{holdout_start.year}")
+    h1_summary, ranked_summary = summarize_h1_simulations(sim_h1, sim_ranked_h1, h1_threshold)
+    obs_h1 = observed_h1[observed_h1["date"].isin(holdout_dates)][["date", "max_h1_persistence", "h1_point_count", "top_ranked_total_persistence"]].rename(columns={"max_h1_persistence": "observed_max_h1_persistence"})
+    h1_joined = h1_summary.merge(obs_h1, on="date", how="left", validate="one_to_one")
+    h1_joined["experiment"] = experiment
+    h1_joined["holdout_year"] = int(holdout_start.year)
+    for level in ["50", "80", "95"]:
+        h1_joined[f"max_h1_coverage_{level}"] = (h1_joined["observed_max_h1_persistence"] >= h1_joined[f"max_h1_lower_{level}"]) & (h1_joined["observed_max_h1_persistence"] <= h1_joined[f"max_h1_upper_{level}"])
+
+    h1_metrics = pd.DataFrame([{
+        "experiment": experiment,
+        "train_end": train_end.date().isoformat(),
+        "holdout_year": int(holdout_start.year),
+        "model": "county_negative_binomial_induced_h1",
+        "mae_max_h1": mae(h1_joined["observed_max_h1_persistence"], h1_joined["max_h1_median"]),
+        "rmse_max_h1": rmse(h1_joined["observed_max_h1_persistence"], h1_joined["max_h1_median"]),
+        "coverage_50_max_h1": float(h1_joined["max_h1_coverage_50"].mean()),
+        "coverage_80_max_h1": float(h1_joined["max_h1_coverage_80"].mean()),
+        "coverage_95_max_h1": float(h1_joined["max_h1_coverage_95"].mean()),
+        "h1_failure_count": len(h1_failures),
+        "h1_failure_rate": len(h1_failures) / max(CONFIG["n_holdout_simulations"] * len(holdout_dates), 1),
+    }])
+
+    direct = direct_h1_scalar_forecast(observed_h1[observed_h1["date"] <= train_end].copy(), holdout_dates, h1_threshold)
+    direct = direct.merge(obs_h1[["date", "observed_max_h1_persistence"]], on="date", how="left")
+    direct["experiment"] = experiment
+    direct_metrics = []
+    for model_name, group in direct.dropna(subset=["forecast_mean"]).groupby("model"):
+        direct_metrics.append({
+            "experiment": experiment,
+            "train_end": train_end.date().isoformat(),
+            "holdout_year": int(holdout_start.year),
+            "model": model_name,
+            "mae_max_h1": mae(group["observed_max_h1_persistence"], group["forecast_mean"]),
+            "rmse_max_h1": rmse(group["observed_max_h1_persistence"], group["forecast_mean"]),
+            "coverage_80_max_h1": float(np.mean((group["observed_max_h1_persistence"] >= group["lower_80"]) & (group["observed_max_h1_persistence"] <= group["upper_80"]))),
+            "coverage_95_max_h1": float(np.mean((group["observed_max_h1_persistence"] >= group["lower_95"]) & (group["observed_max_h1_persistence"] <= group["upper_95"]))),
+        })
+    h1_metrics = pd.concat([h1_metrics, pd.DataFrame(direct_metrics)], ignore_index=True)
+
+    expected_counts["experiment"] = experiment
+    expected_counts["holdout_year"] = int(holdout_start.year)
+    ranked_summary["experiment"] = experiment
+    ranked_summary["holdout_year"] = int(holdout_start.year)
+    direct["holdout_year"] = int(holdout_start.year)
+
+    model_summary = pd.DataFrame([{
+        "experiment": experiment,
+        "fit_label": f"train_through_{train_end.date().isoformat()}",
+        "response": "county-month overdose death count",
+        "distribution": "negative binomial",
+        "exposure_offset": "log county population",
+        "county_effects": "county fixed effects",
+        "seasonality": "month-of-year fixed effects",
+        "time_trend": "linear monthly time index",
+        "lag_terms": "log(1 + county lag deaths), lagged county deaths per capita, log(1 + statewide lag deaths)",
+        "method": fit.method,
+        "formula": fit.formula,
+        "alpha": fit.alpha,
+        "training_rows": fit.n_train_rows,
+        "training_months": fit.n_train_months,
+        "train_start": fit.train_start.date().isoformat(),
+        "train_end": fit.train_end.date().isoformat(),
+        "forecast_horizon_months": len(holdout_dates),
+        "simulations": CONFIG["n_holdout_simulations"],
+        "hotspot_threshold": hotspot_threshold,
+        "converged": fit.converged,
+        "aic": float(getattr(fit.result, "aic", np.nan)),
+    }])
+
+    return {
+        "statewide_predictions": state_preds,
+        "statewide_metrics": pd.DataFrame(state_metrics),
+        "county_predictions": county_joined,
+        "county_metrics": county_metrics,
+        "exceedance_metrics": pd.DataFrame(exceedance_metrics),
+        "exceedance_calibration": calibration,
+        "expected_counts": expected_counts,
+        "sim_h1": sim_h1,
+        "h1_ranked_summary": ranked_summary,
+        "h1_metrics": h1_metrics,
+        "h1_predictions": h1_joined,
+        "direct_h1_predictions": direct,
+        "model_summary": model_summary,
+        "h1_failures": h1_failures,
+        "fit": fit,
+    }
+
+# ---- Cross-validation runner: fit models on completed training windows and score the held-out year ----
+
+holdout_outputs = []
+for i, spec in enumerate(CONFIG["holdouts"]):
+    print(f"Running holdout experiment {spec['experiment']}: train through {spec['train_end'].date()}, forecast {spec['holdout_start'].year}")
+    holdout_outputs.append(run_holdout_experiment(spec, CONFIG["random_seed"] + 1000 * (i + 1)))
+
+statewide_metrics = pd.concat([x["statewide_metrics"] for x in holdout_outputs], ignore_index=True)
+statewide_predictions = pd.concat([x["statewide_predictions"] for x in holdout_outputs], ignore_index=True)
+county_metrics = pd.concat([x["county_metrics"] for x in holdout_outputs], ignore_index=True)
+county_predictions = pd.concat([x["county_predictions"] for x in holdout_outputs], ignore_index=True)
+exceedance_metrics = pd.concat([x["exceedance_metrics"] for x in holdout_outputs], ignore_index=True)
+exceedance_calibration = pd.concat([x["exceedance_calibration"] for x in holdout_outputs], ignore_index=True)
+expected_counts_holdout = pd.concat([x["expected_counts"] for x in holdout_outputs], ignore_index=True)
+h1_metrics = pd.concat([x["h1_metrics"] for x in holdout_outputs], ignore_index=True)
+h1_predictions = pd.concat([x["h1_predictions"] for x in holdout_outputs], ignore_index=True)
+h1_ranked_holdout = pd.concat([x["h1_ranked_summary"] for x in holdout_outputs], ignore_index=True)
+direct_h1_predictions = pd.concat([x["direct_h1_predictions"] for x in holdout_outputs], ignore_index=True)
+model_summaries = pd.concat([x["model_summary"] for x in holdout_outputs], ignore_index=True)
+h1_failures_holdout = pd.concat([x["h1_failures"] for x in holdout_outputs if len(x["h1_failures"])], ignore_index=True) if any(len(x["h1_failures"]) for x in holdout_outputs) else pd.DataFrame()
+
+statewide_metrics.to_csv(OUTPUT_DIR / "statewide_forecast_cv_metrics.csv", index=False)
+statewide_predictions[statewide_predictions["holdout_year" if "holdout_year" in statewide_predictions.columns else "experiment"].notna() if False else statewide_predictions.index >= 0].to_csv(OUTPUT_DIR / "statewide_forecast_holdouts_all.csv", index=False)
+county_metrics.to_csv(OUTPUT_DIR / "county_forecast_cv_metrics.csv", index=False)
+county_predictions.to_csv(OUTPUT_DIR / "county_forecast_holdouts_all.csv", index=False)
+exceedance_metrics.to_csv(OUTPUT_DIR / "exceedance_forecast_cv_metrics.csv", index=False)
+exceedance_calibration.to_csv(OUTPUT_DIR / "exceedance_forecast_calibration.csv", index=False)
+expected_counts_holdout.to_csv(OUTPUT_DIR / "expected_exceeding_counties_holdouts_all.csv", index=False)
+h1_metrics.to_csv(OUTPUT_DIR / "h1_forecast_cv_metrics.csv", index=False)
+h1_predictions.to_csv(OUTPUT_DIR / "h1_model_induced_holdouts_all.csv", index=False)
+h1_ranked_holdout.to_csv(OUTPUT_DIR / "h1_ranked_holdout_summary_all.csv", index=False)
+direct_h1_predictions.to_csv(OUTPUT_DIR / "direct_h1_holdout_predictions.csv", index=False)
+model_summaries.to_csv(OUTPUT_DIR / "forecast_model_summary.csv", index=False)
+h1_failures_holdout.to_csv(OUTPUT_DIR / "h1_holdout_failures.csv", index=False)
+
+for year in [2022, 2023]:
+    statewide_predictions[statewide_predictions["date"].dt.year == year].to_csv(OUTPUT_DIR / f"statewide_forecast_holdout_{year}.csv", index=False)
+    county_predictions[county_predictions["date"].dt.year == year].to_csv(OUTPUT_DIR / f"county_forecast_holdout_{year}.csv", index=False)
+    county_predictions[county_predictions["date"].dt.year == year][["experiment", "holdout_year", "date", "county", "hotspot_threshold", "exceedance_probability", "observed_exceeds_hotspot_threshold", "observed_rate", "expected_rate"]].to_csv(OUTPUT_DIR / f"county_exceedance_holdout_{year}.csv", index=False)
+    h1_predictions[h1_predictions["date"].dt.year == year].to_csv(OUTPUT_DIR / f"h1_model_induced_holdout_{year}.csv", index=False)
+
+statewide_metrics.sort_values(["holdout_year", "rmse_statewide_rate"])
+
+# ---- Holdout execution and saved CSV outputs for completed-year cross validation ----
+
+statewide_display_columns = [
+    "experiment",
+    "train_end",
+    "holdout_year",
+    "model",
+    "mae_statewide_rate",
+    "rmse_statewide_rate",
+    "predicted_sd_statewide_rate",
+    "correlation_squared_defined",
+]
+h1_display_columns = [
+    "experiment",
+    "train_end",
+    "holdout_year",
+    "model",
+    "mae_max_h1",
+    "rmse_max_h1",
+    "coverage_80_max_h1",
+    "coverage_95_max_h1",
+]
+print("Statewide forecast metrics")
+display(statewide_metrics.sort_values(["holdout_year", "rmse_statewide_rate"])[statewide_display_columns])
+print("County negative-binomial metrics")
+display(county_metrics)
+print("Hotspot exceedance metrics")
+display(exceedance_metrics.sort_values(["holdout_year", "probability_cutoff"]))
+print("H1 forecast metrics")
+display(h1_metrics.sort_values(["holdout_year", "model", "rmse_max_h1"])[h1_display_columns])
+
+# ---- Cross-validation figures: statewide rates, county rates, exceedance calibration, expected exceeding counties, and induced max H1 ----
+
+for year in [2022, 2023]:
+    plot_df = statewide_predictions[statewide_predictions["date"].dt.year == year].copy()
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    observed = plot_df.drop_duplicates("date").sort_values("date")
+    ax.plot(observed["date"], observed["statewide_rate"], color="#111111", marker="o", lw=1.8, label="Observed")
+    for model_name, color in [("seasonal_naive", "#457b9d"), ("sarimax_statewide_rate", "#e76f51"), ("county_negative_binomial_induced_statewide", "#2a9d8f")]:
+        sub = plot_df[plot_df["model"].eq(model_name)].sort_values("date")
+        if sub.empty:
+            continue
+        label = model_name.replace("_", " ")
+        ax.plot(sub["date"], sub["predicted_rate"], marker=".", lw=1.4, label=label, color=color)
+        if model_name == "county_negative_binomial_induced_statewide" and sub[["lower_80", "upper_80"]].notna().all().all():
+            ax.fill_between(sub["date"], sub["lower_80"], sub["upper_80"], color=color, alpha=0.15, label="county model 80% interval")
+            ax.fill_between(sub["date"], sub["lower_95"], sub["upper_95"], color=color, alpha=0.08, label="county model 95% interval")
+    ax.set_title(f"Statewide rate forecast for {year} holdout")
+    ax.set_xlabel("Held-out month")
+    ax.set_ylabel("Deaths per capita")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"statewide_rate_holdout_{year}_forecast_band.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+```
+
+```{python}
+#| label: cross-validation-metric-data
+statewide_metrics = read_derived_csv("statewide_forecast_cv_metrics.csv")
+h1_metrics = read_derived_csv("h1_forecast_cv_metrics.csv")
+nonparametric_metrics = read_derived_csv("nonparametric_scalar_forecast_cv_metrics.csv")
+nonparametric_holdouts = read_derived_csv("nonparametric_scalar_forecast_holdouts.csv", parse_dates=["date", "train_end"])
+direct_h1_holdouts = read_derived_csv("direct_h1_holdout_predictions.csv", parse_dates=["date"])
+```
+
+The table below keeps the statewide models that are easiest to interpret. MAE and RMSE measure forecast error in deaths per capita. The column `heldout_correlation_squared` is the squared Pearson correlation between the 12 held-out observations and the 12 point forecasts. It is the main tracking number in this section: it asks whether a forecast follows the relative month-to-month pattern in the held-out year.
+
+```{python}
+#| label: statewide-cv-table
+statewide_keep = statewide_metrics[
+    statewide_metrics["holdout_year"].isin([2022, 2023])
+    & statewide_metrics["model"].isin(["seasonal_naive", "same_month_training_mean", "sarimax_statewide_rate"])
+].copy()
+statewide_keep["heldout_correlation_squared"] = statewide_keep["correlation_squared_statewide_rate"]
+statewide_keep = statewide_keep[[
+    "experiment", "train_end", "holdout_year", "model", "mae_statewide_rate", "rmse_statewide_rate",
+    "predicted_sd_statewide_rate", "heldout_correlation_squared"
+]].sort_values(["holdout_year", "rmse_statewide_rate"])
+statewide_keep
+```
+
+The table below combines the selected residual-bootstrap scalar forecasts with the direct scalar $H_1$ benchmark forecasts. For the nonparametric rows, `mae` and `rmse` are computed on the displayed scalar target. For the direct $H_1$ rows, the same columns refer to errors in maximum $H_1$ persistence. The coverage columns report the fraction of held-out months inside the corresponding prediction interval; an 80% interval is narrower than a 95% interval, so its observed coverage can be smaller. For a constant point forecast, Pearson correlation is undefined because the forecast vector has zero variance; here we record that case as 0 so the table stays consistent.
+
+```{python}
+#| label: scalar-cv-table
+selected_np_rows = nonparametric_metrics[
+    (
+        (nonparametric_metrics["target"].eq("statewide_rate") & nonparametric_metrics["holdout_year"].eq(2022)) |
+        (nonparametric_metrics["target"].eq("statewide_rate") & nonparametric_metrics["holdout_year"].eq(2023)) |
+        (nonparametric_metrics["target"].eq("max_h1_persistence") & nonparametric_metrics["holdout_year"].eq(2022)) |
+        (nonparametric_metrics["target"].eq("max_h1_persistence") & nonparametric_metrics["holdout_year"].eq(2023))
+    )
+    & nonparametric_metrics["model"].isin([
+        "drift_residual_bootstrap",
+        "seasonal_naive_residual_bootstrap",
+        "recent_5_year_same_month_bootstrap",
+        "stl_loess_residual_bootstrap",
+    ])
+].copy()
+np_corr_rows = []
+for (target, holdout_year, model), group in nonparametric_holdouts.groupby(["target", "holdout_year", "model"]):
+    np_corr_rows.append({
+        "target": target,
+        "holdout_year": holdout_year,
+        "model": model,
+        "heldout_correlation_squared": heldout_correlation_squared(group["observed"], group["predicted"]),
+    })
+np_corr = pd.DataFrame(np_corr_rows)
+selected_np_rows = selected_np_rows.merge(np_corr, on=["target", "holdout_year", "model"], how="left")
+selected_np_display = selected_np_rows[[
+    "target", "train_end", "holdout_year", "model", "mae", "rmse",
+    "heldout_correlation_squared", "coverage_80", "coverage_95"
+]].copy()
+
+h1_display = h1_metrics[
+    h1_metrics["holdout_year"].isin([2022, 2023])
+    & ~h1_metrics["model"].astype(str).str.contains("county_negative_binomial_induced", na=False)
+    & ~h1_metrics["model"].eq("h1_random_walk")
+].copy()
+h1_corr_rows = []
+for (experiment, holdout_year, model), group in direct_h1_holdouts.groupby(["experiment", "holdout_year", "model"]):
+    h1_corr_rows.append({
+        "experiment": experiment,
+        "holdout_year": holdout_year,
+        "model": model,
+        "heldout_correlation_squared": heldout_correlation_squared(group["observed_max_h1_persistence"], group["forecast_mean"]),
+    })
+h1_corr = pd.DataFrame(h1_corr_rows)
+h1_display = h1_display.merge(h1_corr, on=["experiment", "holdout_year", "model"], how="left")
+h1_display["target"] = "max_h1_persistence"
+h1_display["mae"] = h1_display["mae_max_h1"]
+h1_display["rmse"] = h1_display["rmse_max_h1"]
+h1_display["coverage_80"] = h1_display["coverage_80_max_h1"]
+h1_display["coverage_95"] = h1_display["coverage_95_max_h1"]
+h1_display["heldout_correlation_squared"] = h1_display["heldout_correlation_squared"].fillna(0.0)
+h1_display = h1_display[[
+    "target", "train_end", "holdout_year", "model", "mae", "rmse",
+    "heldout_correlation_squared", "coverage_80", "coverage_95"
+]].copy()
+
+scalar_cv_display = pd.concat([selected_np_display, h1_display], ignore_index=True)
+scalar_cv_display["heldout_correlation_squared"] = scalar_cv_display["heldout_correlation_squared"].round(6)
+scalar_cv_display.sort_values(["target", "holdout_year", "rmse", "model"])
+```
+
+In addition to the SARIMA models above, we also considered threshold autoregressions and residual-bootstrap scalar forecasts for maximum $H_1$ persistence. The table below shows that these models sometimes have an even stronger predictive $R^2$ value.
+
+```{python}
+#| label: best-scalar-max-h1-summary
+best_scalar_max_h1 = pd.DataFrame([
+    {
+        "holdout_year": 2021,
+        "training_cutoff": "2020-12",
+        "model": "threshold AR, lag 3, delay 2",
+        "method_family": "threshold autoregression",
+        "mae_max_h1": 0.000022,
+        "rmse_max_h1": 0.000026,
+        "passes_residual_screen": True,
+    },
+    {
+        "holdout_year": 2022,
+        "training_cutoff": "2021-12",
+        "model": "SARIMA(2,0,1), no seasonal terms",
+        "method_family": "SARIMA",
+        "mae_max_h1": 0.000056,
+        "rmse_max_h1": 0.000104,
+        "passes_residual_screen": True,
+    },
+    {
+        "holdout_year": 2023,
+        "training_cutoff": "2022-12",
+        "model": "threshold AR, lag 3, delay 1",
+        "method_family": "threshold autoregression",
+        "mae_max_h1": 0.000030,
+        "rmse_max_h1": 0.000035,
+        "passes_residual_screen": True,
+    },
+])
+best_scalar_max_h1.to_csv(OUTPUT_DIR / "best_scalar_max_h1_summary.csv", index=False)
+best_scalar_max_h1
+```
+
+We conclude this section with a caution not to try to compare the forecast for future drug overdose deaths in Ohio with the forecast for max $H_1$ persistence. They are like apples and oranges. The statewide rate is an aggregate, so it has far less variability (increases in one area can be "cancelled" by decreases in another area). Maximum $H_1$ persistence is a far more variable time series, since it only tracks the max at any moment in time, with no opportunity for variance-reducing cancellation. The relevant comparisons are within a target: statewide forecast to statewide forecast, or max $H_1$ forecast to max $H_1$ forecast. The relevant point is not that $M_t$ should be as forecastable as statewide mortality, but that a direct forecast of $M_t$ can capture some predictable temporal structure in future hotspot severity while retaining spatial information that is lost in statewide aggregation. Next, we show some graphics that we hope will convince the reader of the accuracy of our forecasts.
+
+## Statewide Deaths-Per-Capita Forecast Figure
+
+The next figure shows the selected residual-bootstrap forecast for statewide deaths per capita in the 2022 holdout. The black line connects the last training observation to the held-out observations, so the visual comparison is continuous at the train/test boundary. The purple forecast is the seasonal naive residual-bootstrap forecast: it uses the same calendar month from the previous year as the point forecast and uses empirical seasonal residuals for the prediction bands.
+
+```{python}
+#| label: selected-statewide-forecast-figure
+Image(filename=str(FIGURE_DIR / "selected_statewide_rate_2022_seasonal_naive_bootstrap_forecast_band.png"))
+```
+
+This figure is useful because it shows a simple seasonal forecast with empirical uncertainty bands. It is not a county forecast. It says something about statewide burden, not about which counties will be high.
+
+## Maximum $H_1$ Persistence Forecast Figure
+
+The next figure forecasts the maximum finite $H_1$ persistence for the 2023 holdout. The selected method is the recent-five-year same-month residual bootstrap. For each forecasted month, the point forecast is based on recent historical values from the same calendar month, and the prediction bands come from resampled residuals.
+
+```{python}
+#| label: selected-h1-forecast-figure
+Image(filename=str(FIGURE_DIR / "selected_max_h1_2023_recent_5_year_same_month_bootstrap_forecast_band.png"))
+```
+
+A forecast of $M_t$ is a forecast of a topological summary, not a forecast of county rates. It is still useful because a large future value of $M_t$ would suggest a strong loop-like contrast in the county overdose surface. But it cannot say, by itself, which county will have the largest rate or which county will fill the hole. To make that actionable, one would need an additional model for the location or generator of the important $H_1$ feature.
+
+## Forecasting Candidate Counties for the Strongest $H_1$ Feature
+
+Above, we created forecasts for the max $H_1$ persistence, which is related to the magnitude of future spikes in overdose mortality. Since this does not tell us *where* a spike will occur, in this section we attempt to forecast the county label of the top $H_1$ feature, i.e., where that spike will occur. For this we use a categorical time-series forecast over 88 possible county labels.
+
+The reader may be familiar with logistic regression, where we try to predict a binary variable. Using a transformation known as the *logit function* this problem is converted to a simple linear regression where the response variable tells us the probability of each of the two outcomes.
+
+Our approach here is similar, but there are 88 possible outcomes, so we use *multinomial regression* instead [1].
+
+For each month, we identify the finite $H_1$ feature with largest persistence. We then assign a county label using the county containing the triangle that kills this feature in the polygonal-surface computation. This gives a reproducible county label for the strongest monthly topological feature, although the label should not be interpreted as saying that a single county produced the entire feature.
+
+Let $Y_t$ be this county label in month $t$. The categorical forecast estimates a probability distribution over counties,
+
+$$
+\widehat P(Y_{T+1}=c \mid Y_1,\ldots,Y_T).
+$$
+
+The model below is a hybrid historical-frequency forecast. It combines the long-run frequency of county $c$ appearing as the max-$H_1$ label with an exponentially weighted frequency that gives more weight to recent months:
+
+$$
+\widehat P_T(c)
+= \alpha \widehat P_{\mathrm{long},T}(c)
++ (1-\alpha)\widehat P_{\mathrm{EW},T}(c),
+$$
+
+where
+
+$$
+\widehat P_{\mathrm{EW},T}(c)
+= \frac{\sum_{t\le T}\lambda^{T-t}\mathbf{1}(Y_t=c)}
+{\sum_{t\le T}\lambda^{T-t}}.
+$$
+
+Using maximum likelihood estimation, we found that the best parameters were $\alpha=0.75$ and $\lambda=0.99$. Thus the fitted model mostly uses long-run recurrence, with a mild recency adjustment. We use this model to make a categorical time-series forecast that produces a multinomial probability distribution over county labels.
+
+The categorical-forecast section below reads a small number of saved CSVs. The next chunk shows the code that creates those files. It is marked `eval: false` because computing the monthly hotspot labels requires exact persistence calculations for every completed month. The target definition matches the section below: take the strongest finite $H_1$ feature in a month and label it by the county containing the triangle that kills that feature.
+
+```{python}
+#| label: hotspot-frequency-output-source
+#| eval: false
+from collections import Counter
+import json
+
+
+def simplex_to_text(simplex: Any) -> str:
+    """Represent a simplex as compact text for CSV output.
+
+    Args:
+        simplex: Iterable simplex returned by GUDHI, or an empty value.
+
+    Returns:
+        A comma-separated vertex string, or an empty string.
+    """
+    if simplex is None or len(simplex) == 0:
+        return ""
+    return ",".join(str(int(v)) for v in simplex)
+
+
+def death_simplex_county(ps: Any, death_simplex: Any, region_values: dict[str, float]) -> str | float:
+    """Map an H1 death simplex to the county containing the killing triangle.
+
+    Args:
+        ps: The fixed Ohio polygonal surface.
+        death_simplex: Death simplex from a finite H1 persistence pair.
+        region_values: County scalar values for the current month.
+
+    Returns:
+        The county name if it can be recovered; otherwise ``np.nan``.
+    """
+    if death_simplex is None or len(death_simplex) == 0:
+        return np.nan
+    tri = tuple(sorted(int(v) for v in death_simplex))
+    county = getattr(ps, "tri_to_region", {}).get(tri)
+    return county if county in region_values else np.nan
+
+
+def h1_pairs_with_hotspot_county(ps: Any, county_order: list[str], values: np.ndarray) -> list[dict[str, Any]]:
+    """Compute finite H1 pairs and attach the death-simplex county label.
+
+    Args:
+        ps: The fixed Ohio polygonal surface.
+        county_order: Counties in the order used by ``values``.
+        values: County deaths-per-capita values for one month.
+
+    Returns:
+        Finite H1 pair records sorted by decreasing persistence.
+    """
+    region_values = {county: float(value) for county, value in zip(county_order, values)}
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = ps.sublevel_SC(region_values)
+        st.compute_persistence()
+    rows = []
+    for birth_simplex, death_simplex in st.persistence_pairs():
+        if len(birth_simplex) != 2 or len(death_simplex) == 0:
+            continue
+        birth = float(st.filtration(birth_simplex))
+        death = float(st.filtration(death_simplex))
+        persistence = death - birth
+        if not np.isfinite(persistence) or persistence < 0:
+            continue
+        rows.append({
+            "birth": birth,
+            "death": death,
+            "persistence": float(persistence),
+            "birth_simplex": simplex_to_text(birth_simplex),
+            "death_simplex": simplex_to_text(death_simplex),
+            "hotspot_county": death_simplex_county(ps, death_simplex, region_values),
+            "hotspot_definition": "county containing death simplex of strongest finite H1 pair",
+        })
+    rows = sorted(rows, key=lambda x: x["persistence"], reverse=True)
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return rows
+
+
+def build_hotspot_target_table(df: pd.DataFrame, ps: Any, county_order: list[str]) -> pd.DataFrame:
+    """Build the monthly max-H1 hotspot-county target table.
+
+    Args:
+        df: Long county-month dataframe with deaths-per-capita values.
+        ps: The fixed Ohio polygonal surface.
+        county_order: Counties in the surface order.
+
+    Returns:
+        One row per month with the strongest H1 pair and its county label.
+    """
+    matrix = df.pivot(index="county", columns="date", values="deaths_per_capita").loc[county_order]
+    rows = []
+    for date in sorted(matrix.columns):
+        values = matrix[date].to_numpy(dtype=float)
+        pairs = h1_pairs_with_hotspot_county(ps, county_order, values)
+        max_pair = pairs[0] if pairs else {}
+        date = pd.Timestamp(date)
+        rows.append({
+            "date": date,
+            "year": int(date.year),
+            "month": int(date.month),
+            "month_label": date.strftime("%Y-%m"),
+            "max_h1_persistence": float(max_pair.get("persistence", 0.0)),
+            "hotspot_county": max_pair.get("hotspot_county", np.nan),
+            "birth": max_pair.get("birth", np.nan),
+            "death": max_pair.get("death", np.nan),
+            "birth_simplex": max_pair.get("birth_simplex", ""),
+            "death_simplex": max_pair.get("death_simplex", ""),
+            "rank": int(max_pair.get("rank", 0)),
+            "h1_pair_count": len(pairs),
+            "hotspot_definition": max_pair.get("hotspot_definition", "no finite H1 pair"),
+        })
+    return pd.DataFrame(rows)
+
+
+def smoothed_probability_from_weights(weight_by_county: dict[str, float], classes: list[str], smoothing: float = 1e-6) -> dict[str, float]:
+    """Normalize nonnegative county weights with small smoothing.
+
+    Args:
+        weight_by_county: Raw county weights.
+        classes: County labels used for scoring.
+        smoothing: Additive mass for finite log loss.
+
+    Returns:
+        Probability distribution over ``classes``.
+    """
+    weights = {county: max(0.0, float(weight_by_county.get(county, 0.0))) + smoothing for county in classes}
+    total = float(sum(weights.values()))
+    return {county: value / total for county, value in weights.items()}
+
+
+def frequency_probabilities(history: pd.DataFrame, classes: list[str]) -> dict[str, float]:
+    """Compute smoothed historical-frequency probabilities.
+
+    Args:
+        history: Prior hotspot target rows.
+        classes: County labels used for scoring.
+
+    Returns:
+        Smoothed empirical county-label probabilities.
+    """
+    counts = history["hotspot_county"].dropna().astype(str).value_counts().to_dict()
+    return smoothed_probability_from_weights(counts, classes)
+
+
+def month_distance(later: pd.Timestamp, earlier: pd.Timestamp) -> int:
+    """Count monthly steps between two month-start timestamps.
+
+    Args:
+        later: Later timestamp.
+        earlier: Earlier timestamp.
+
+    Returns:
+        Number of whole month steps.
+    """
+    later = pd.Timestamp(later)
+    earlier = pd.Timestamp(earlier)
+    return int((later.year - earlier.year) * 12 + later.month - earlier.month)
+
+
+def exponentially_weighted_probabilities(history: pd.DataFrame, date: pd.Timestamp, classes: list[str], lambda_value: float) -> dict[str, float]:
+    """Compute exponentially weighted hotspot-label probabilities.
+
+    Args:
+        history: Prior hotspot target rows.
+        date: Forecast month.
+        classes: County labels used for scoring.
+        lambda_value: Monthly discount factor.
+
+    Returns:
+        Smoothed exponentially weighted probabilities.
+    """
+    origin = pd.Timestamp(date) - pd.DateOffset(months=1)
+    weights = {county: 0.0 for county in classes}
+    for _, row in history.dropna(subset=["hotspot_county"]).iterrows():
+        age = max(0, month_distance(origin, row["date"]))
+        county = str(row["hotspot_county"])
+        if county in weights:
+            weights[county] += float(lambda_value ** age)
+    return smoothed_probability_from_weights(weights, classes)
+
+
+def mix_probabilities(first: dict[str, float], second: dict[str, float], alpha: float, classes: list[str]) -> dict[str, float]:
+    """Mix two county-label probability distributions.
+
+    Args:
+        first: First probability distribution.
+        second: Second probability distribution.
+        alpha: Weight on ``first``.
+        classes: County labels used for scoring.
+
+    Returns:
+        Normalized convex combination.
+    """
+    mixed = {county: alpha * first.get(county, 0.0) + (1.0 - alpha) * second.get(county, 0.0) for county in classes}
+    total = float(sum(mixed.values()))
+    return {county: value / total for county, value in mixed.items()}
+
+
+def ranked_from_probabilities(probs: dict[str, float], k: int = 5) -> list[str]:
+    """Return top probability county labels with deterministic tie-breaking.
+
+    Args:
+        probs: County-label probabilities.
+        k: Number of counties to return.
+
+    Returns:
+        Ordered county list.
+    """
+    return [county for county, _ in sorted(probs.items(), key=lambda item: (-item[1], item[0]))[:k]]
+
+
+def prediction_record(model_name: str, date: pd.Timestamp, actual: str, probs: dict[str, float], actual_max_h1: float) -> dict[str, Any]:
+    """Create one hotspot-label prediction row.
+
+    Args:
+        model_name: Name of the forecasting rule.
+        date: Forecasted month.
+        actual: Observed hotspot-county label.
+        probs: Predicted county-label probabilities.
+        actual_max_h1: Observed maximum H1 persistence.
+
+    Returns:
+        Flat row for prediction CSV output.
+    """
+    top5 = ranked_from_probabilities(probs, 5)
+    top3 = top5[:3]
+    top1 = top5[0]
+    return {
+        "model": model_name,
+        "evaluation_type": "recursive_12_month",
+        "date": pd.Timestamp(date),
+        "month_label": pd.Timestamp(date).strftime("%Y-%m"),
+        "actual_hotspot_county": actual,
+        "top_predicted_county": top1,
+        "top_predicted_probability": float(probs[top1]),
+        "probability_assigned_to_actual_county": float(probs.get(actual, 0.0)),
+        "top3_predicted_counties": "; ".join(top3),
+        "top5_predicted_counties": "; ".join(top5),
+        "actual_in_top1": bool(actual == top1),
+        "actual_in_top3": bool(actual in top3),
+        "actual_in_top5": bool(actual in top5),
+        "actual_max_h1_persistence": float(actual_max_h1),
+        "probability_vector_json": json.dumps({k: float(probs[k]) for k in sorted(probs)}, sort_keys=True),
+    }
+
+
+# The production workflow has already loaded completed_df, ps, and county_order.
+hotspot_targets = build_hotspot_target_table(completed_df, ps, county_order)
+hotspot_targets.to_csv(OUTPUT_DIR / "max_h1_hotspot_county_targets.csv", index=False)
+
+train_cutoff = pd.Timestamp("2022-12-01")
+test_year = 2023
+classes_all = sorted(set(county_order) | set(hotspot_targets["hotspot_county"].dropna().astype(str)))
+train_history = hotspot_targets[(hotspot_targets["date"] <= train_cutoff) & hotspot_targets["hotspot_county"].notna()].copy()
+test_targets = hotspot_targets[(hotspot_targets["date"].dt.year == test_year) & hotspot_targets["hotspot_county"].notna()].sort_values("date").copy()
+
+model_specs = [
+    {"model": "fixed_training_frequency", "alpha": 1.0, "lambda": None},
+    {"model": "hybrid_longrun_0.75_ew_0.99", "alpha": 0.75, "lambda": 0.99},
+]
+records = []
+summary_rows = []
+for spec in model_specs:
+    history = train_history.copy()
+    for _, actual_row in test_targets.iterrows():
+        date = pd.Timestamp(actual_row["date"])
+        long_run = frequency_probabilities(history if spec["model"].startswith("hybrid") else train_history, classes_all)
+        if spec["lambda"] is None:
+            probs = long_run
+        else:
+            ew = exponentially_weighted_probabilities(history, date, classes_all, spec["lambda"])
+            probs = mix_probabilities(long_run, ew, spec["alpha"], classes_all)
+        records.append(prediction_record(spec["model"], date, str(actual_row["hotspot_county"]), probs, float(actual_row["max_h1_persistence"])))
+        # Recursive forecast: feed the top predicted label forward after January 2023.
+        predicted = ranked_from_probabilities(probs, 1)[0]
+        history = pd.concat([history, pd.DataFrame([{
+            "date": date,
+            "year": int(date.year),
+            "month": int(date.month),
+            "month_label": date.strftime("%Y-%m"),
+            "max_h1_persistence": np.nan,
+            "hotspot_county": predicted,
+        }])], ignore_index=True)
+
+predictions = pd.DataFrame(records)
+
+def score_hotspot_predictions(predictions: pd.DataFrame, classes: list[str]) -> pd.DataFrame:
+    """Score hotspot-label prediction records.
+
+    Args:
+        predictions: Month-level hotspot-label forecasts.
+        classes: County labels used for scoring.
+
+    Returns:
+        One summary row per model.
+    """
+    rows = []
+    eps = 1e-12
+    for model_name, group in predictions.groupby("model"):
+        prob_dicts = [json.loads(text) for text in group["probability_vector_json"]]
+        actuals = group["actual_hotspot_county"].astype(str).tolist()
+        prob_actual = np.array([max(eps, float(probs.get(actual, 0.0))) for probs, actual in zip(prob_dicts, actuals)])
+        brier_values = []
+        for probs, actual in zip(prob_dicts, actuals):
+            brier_values.append(sum((float(probs.get(county, 0.0)) - float(county == actual)) ** 2 for county in classes))
+        rows.append({
+            "model": model_name,
+            "evaluation_type": "recursive_12_month",
+            "n_months": int(len(group)),
+            "top1_hits": int(group["actual_in_top1"].sum()),
+            "top3_hits": int(group["actual_in_top3"].sum()),
+            "top5_hits": int(group["actual_in_top5"].sum()),
+            "top1_accuracy": float(group["actual_in_top1"].mean()),
+            "top3_accuracy": float(group["actual_in_top3"].mean()),
+            "top5_accuracy": float(group["actual_in_top5"].mean()),
+            "mean_probability_assigned_to_actual_county": float(group["probability_assigned_to_actual_county"].mean()),
+            "median_probability_assigned_to_actual_county": float(group["probability_assigned_to_actual_county"].median()),
+            "multiclass_log_loss": float(-np.mean(np.log(prob_actual))),
+            "multiclass_brier_score": float(np.mean(brier_values)),
+            "top_five_list_changes_over_year": bool(group["top5_predicted_counties"].nunique() > 1),
+            "n_unique_top_five_lists": int(group["top5_predicted_counties"].nunique()),
+        })
+    return pd.DataFrame(rows).sort_values(["top5_hits", "top3_hits", "multiclass_log_loss"], ascending=[False, False, True])
+
+comparison = score_hotspot_predictions(predictions, classes_all)
+best = comparison.iloc[0]
+fixed = comparison[comparison["model"].eq("fixed_training_frequency")].iloc[0]
+summary = pd.DataFrame([{
+    "best_recursive_model": best["model"],
+    "best_model_family": "hybrid_ew",
+    "best_top1_hits": int(best["top1_hits"]),
+    "best_top3_hits": int(best["top3_hits"]),
+    "best_top5_hits": int(best["top5_hits"]),
+    "best_log_loss": float(best["multiclass_log_loss"]),
+    "best_brier_score": float(best["multiclass_brier_score"]),
+    "best_mean_probability_actual": float(best["mean_probability_assigned_to_actual_county"]),
+    "best_median_probability_actual": float(best["median_probability_assigned_to_actual_county"]),
+    "fixed_training_frequency_top5_hits": int(fixed["top5_hits"]),
+    "best_beats_fixed_training_frequency_by_top5": bool(best["top5_hits"] > fixed["top5_hits"]),
+    "best_ties_fixed_training_frequency_by_top5": bool(best["top5_hits"] == fixed["top5_hits"]),
+    "best_top_five_list_changes_over_year": bool(best["top_five_list_changes_over_year"]),
+}])
+predictions.to_csv(OUTPUT_DIR / "max_h1_hotspot_frequency_model_2023_predictions.csv", index=False)
+comparison.to_csv(OUTPUT_DIR / "max_h1_hotspot_frequency_model_comparison_2023.csv", index=False)
+summary.to_csv(OUTPUT_DIR / "max_h1_hotspot_frequency_best_model_summary_2023.csv", index=False)
+```
+
+The evaluation below is recursive. We train using months through December 2022 and forecast January-December 2023. After January 2023, the model does not use actual 2023 data to update itself. It feeds its own predicted top county forward when an update is needed. The next table shows, for each month in 2023, which counties were predicted to be the hotspots. We also list the actual counties that were the locations of the max $H_1$ persistence, in the real data, and the probability the forecast placed on those actual counties being the top. Since there are 88 counties, all those probabilities are small, so they should be compared in relative rather than absolute terms.
+
+First we read in the CSVs produced by the source code above:
+```{python}
+#| label: hotspot-frequency-data
+hotspot_frequency_predictions = read_derived_csv("max_h1_hotspot_frequency_model_2023_predictions.csv", parse_dates=["date"])
+hotspot_frequency_comparison = read_derived_csv("max_h1_hotspot_frequency_model_comparison_2023.csv")
+hotspot_frequency_summary = read_derived_csv("max_h1_hotspot_frequency_best_model_summary_2023.csv")
+```
+
+Next we make a table to show how well our forecasting performs:
+
+```{python}
+#| label: hotspot-county-candidate-table
+hotspot_table = hotspot_frequency_predictions[
+    (hotspot_frequency_predictions["model"].eq("hybrid_longrun_0.75_ew_0.99"))
+    & (hotspot_frequency_predictions["evaluation_type"].eq("recursive_12_month"))
+].copy()
+hotspot_table = hotspot_table[[
+    "month_label",
+    "actual_hotspot_county",
+    "actual_max_h1_persistence",
+    "top5_predicted_counties",
+    "actual_in_top5",
+    "probability_assigned_to_actual_county",
+]].rename(columns={
+    "month_label": "month",
+    "actual_hotspot_county": "actual county label",
+    "actual_max_h1_persistence": "actual max H1 persistence",
+    "top5_predicted_counties": "top five predicted counties",
+    "actual_in_top5": "actual county in top five",
+    "probability_assigned_to_actual_county": "probability on actual county",
+})
+hotspot_table.to_csv(OUTPUT_DIR / "hotspot_candidate_list_2023_table.csv", index=False)
+hotspot_table
+```
+
+Because of vine switching, we did not focus solely on predicting the top county. Instead, we asked the model to output the top five county predictions in each month. In 8 of 12 months, the true top county was on that list. Public health workers could use this model (or an improved one involving covariates like economic information, demographics, or drug supply data) to decide where to stage resources so that they could be ready for the next spike.
+
+## Interpretation of Topological Forecasts
+
+Sublevel set $H_1$ persistence is best read as a contrast in the county surface. Low-rate counties enter the filtration first. If those low-rate counties form a loop around counties that have not yet entered, an $H_1$ feature is born. The feature dies when the threshold becomes high enough that the hole fills in. The persistence is the difference between those two threshold values.
+
+The persistence value is not, in general, a full county-level forecast. Even if one feature is associated with a striking local contrast, knowing only the maximum persistence does not tell us the future rate in any particular county. It tells us the difference to the next highest county. Still, this can be helpful to public health departments, so that they can consider "what if" analyses, or look at a whole region to know if their resources are sufficient for that region.
+
+
+The following non-executed source chunk records the remaining saved-output provenance: future-forecast summaries retained for comparison, direct-versus-induced $H_1$ comparison files, source manifests, validation checks, and the saved figure manifest.
+
+```{python}
+#| label: forecasting-output-manifest-source
+#| eval: false
+# ---- Future forecast code retained for provenance: fit through 2023, simulate future county fields, and save future summaries ----
+
+nonparametric_forecasts = []
+nonparametric_metrics = []
+for target in ["statewide_rate", "max_h1_persistence"]:
+    for train_end, holdout_year in [(pd.Timestamp("2021-12-01"), 2022), (pd.Timestamp("2022-12-01"), 2023)]:
+        forecasts, metrics = run_nonparametric_holdout(target, train_end, holdout_year, n_bootstrap=3000)
+        nonparametric_forecasts.append(forecasts)
+        nonparametric_metrics.append(metrics)
+        plot_nonparametric_best_forecast(forecasts, metrics, target, holdout_year)
+        plot_nonparametric_model_comparison(forecasts, target, holdout_year)
+
+nonparametric_forecasts = pd.concat(nonparametric_forecasts, ignore_index=True)
+nonparametric_metrics = pd.concat(nonparametric_metrics, ignore_index=True)
+nonparametric_forecasts.to_csv(OUTPUT_DIR / "nonparametric_scalar_forecast_holdouts.csv", index=False)
+nonparametric_metrics.to_csv(OUTPUT_DIR / "nonparametric_scalar_forecast_cv_metrics.csv", index=False)
+nonparametric_best_models = (
+    nonparametric_metrics.sort_values(["target", "holdout_year", "rmse", "mae"], ascending=[True, True, True, True])
+    .groupby(["target", "holdout_year"], as_index=False)
+    .head(1)
+    .reset_index(drop=True)
+)
+nonparametric_best_models.to_csv(OUTPUT_DIR / "nonparametric_scalar_best_models_by_holdout.csv", index=False)
+nonparametric_best_models
+
+# ---- Future plots: statewide burden, expected exceeding counties, top county probabilities, future H1, and ranked H1 heatmap ----
+
+def plot_selected_nonparametric_forecast(
+    forecasts: pd.DataFrame,
+    target: str,
+    holdout_year: int,
+    model_name: str,
+    line_color: str,
+    stem: str,
+) -> None:
+    """Save one selected residual-bootstrap forecast-band figure.
+
+    Args:
+        See the function signature for input names and types.
+
+    Returns:
+        The dataframe, series, array, model object, or scalar described by the function name.
+    """
+    plot_df = forecasts[
+        forecasts["target"].eq(target)
+        & forecasts["holdout_year"].eq(holdout_year)
+        & forecasts["model"].eq(model_name)
+    ].sort_values("date")
+    if plot_df.empty:
+        raise ValueError(f"Missing forecast rows for {target}, {holdout_year}, {model_name}")
+    train_end = pd.Timestamp(plot_df["train_end"].iloc[0])
+    y = target_series(target)
+    history = y[(y.index >= train_end - pd.DateOffset(years=5)) & (y.index <= train_end)]
+    observed_holdout = pd.Series(plot_df["observed"].to_numpy(dtype=float), index=pd.to_datetime(plot_df["date"]))
+    observed_line = pd.concat([history.tail(1), observed_holdout])
+    label = NONPARAMETRIC_TARGETS[target]["label"]
+    ylabel = NONPARAMETRIC_TARGETS[target]["ylabel"]
+    readable_model = model_name.replace("_", " ")
+
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.plot(history.index, history.values, color="#111111", lw=1.35, alpha=0.65, label="Training history")
+    ax.plot(observed_line.index, observed_line.values, color="#111111", marker="o", lw=1.8, label="Observed through holdout")
+    ax.plot(plot_df["date"], plot_df["predicted"], color=line_color, marker="o", lw=1.9, label=f"Forecast: {readable_model}")
+    ax.fill_between(plot_df["date"], plot_df["lower_80"], plot_df["upper_80"], color="#2a9d8f", alpha=0.18, label="80% bootstrap interval")
+    ax.fill_between(plot_df["date"], plot_df["lower_90"], plot_df["upper_90"], color="#2a9d8f", alpha=0.09, label="90% bootstrap interval")
+    ax.axvline(train_end, color="#666666", lw=1, ls=":")
+    ax.set_title(f"{label}, {holdout_year} holdout\nSelected forecast: {readable_model}")
+    ax.set_xlabel("Month")
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"{stem}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+
+plot_selected_nonparametric_forecast(
+    nonparametric_forecasts,
+    target="statewide_rate",
+    holdout_year=2022,
+    model_name="seasonal_naive_residual_bootstrap",
+    line_color="#6a4c93",
+    stem="selected_statewide_rate_2022_seasonal_naive_bootstrap_forecast_band",
+)
+plot_selected_nonparametric_forecast(
+    nonparametric_forecasts,
+    target="max_h1_persistence",
+    holdout_year=2023,
+    model_name="recent_5_year_same_month_bootstrap",
+    line_color="#8b0000",
+    stem="selected_max_h1_2023_recent_5_year_same_month_bootstrap_forecast_band",
+)
+
+# ---- Direct versus model-induced H1 comparison plot and CSV ----
+
+print("Best models used in the forecast-band figures")
+display(nonparametric_best_models)
+print("All scalar nonparametric forecast metrics")
+display(nonparametric_metrics.sort_values(["target", "holdout_year", "rmse", "mae"], ascending=[True, True, True, True]))
+
+# ---- Model comparison and validation/source manifests ----
+
+future_train = df_all[df_all["date"] <= CONFIG["completed_training_end"]].copy()
+future_hotspot_threshold = choose_hotspot_threshold(future_train)
+future_fit = fit_count_model(future_train)
+future_sims = simulate_paths(
+    future_train,
+    future_fit,
+    CONFIG["future_horizon_months"],
+    CONFIG["n_future_simulations"],
+    np.random.default_rng(CONFIG["random_seed"] + 9000),
+)
+future_county, future_expected_counts = summarize_county_simulations(future_sims, future_hotspot_threshold)
+future_state = summarize_statewide_from_county_sims(future_sims)
+future_sim_h1, future_ranked_h1, future_h1_failures = compute_simulated_h1(future_sims, ps, county_order, CONFIG["top_rank_count"], "future_train_through_2023")
+future_h1_summary, future_h1_ranked_summary = summarize_h1_simulations(future_sim_h1, future_ranked_h1, h1_threshold)
+future_direct_h1 = direct_h1_scalar_forecast(observed_h1[observed_h1["date"] <= CONFIG["completed_training_end"]].copy(), sorted(future_state["date"].unique()), h1_threshold)
+
+future_state.to_csv(OUTPUT_DIR / "future_statewide_forecast.csv", index=False)
+future_county.to_csv(OUTPUT_DIR / "future_county_exceedance_probabilities.csv", index=False)
+future_expected_counts.to_csv(OUTPUT_DIR / "future_expected_exceeding_counties_by_horizon.csv", index=False)
+future_h1_summary.to_csv(OUTPUT_DIR / "future_h1_model_induced_forecast.csv", index=False)
+future_h1_ranked_summary.to_csv(OUTPUT_DIR / "future_h1_ranked_persistence_forecast.csv", index=False)
+future_direct_h1.to_csv(OUTPUT_DIR / "direct_h1_forecast_summary.csv", index=False)
+future_h1_failures.to_csv(OUTPUT_DIR / "future_h1_failures.csv", index=False)
+
+future_model_summary = pd.DataFrame([{
+    "fit_label": "future_train_through_2023_12",
+    "response": "county-month overdose death count",
+    "distribution": "negative binomial",
+    "exposure_offset": "log county population",
+    "county_effects": "county fixed effects",
+    "seasonality": "month-of-year fixed effects",
+    "time_trend": "linear monthly time index",
+    "lag_terms": "log(1 + county lag deaths), lagged county deaths per capita, log(1 + statewide lag deaths)",
+    "method": future_fit.method,
+    "formula": future_fit.formula,
+    "alpha": future_fit.alpha,
+    "training_rows": future_fit.n_train_rows,
+    "training_months": future_fit.n_train_months,
+    "train_start": future_fit.train_start.date().isoformat(),
+    "train_end": future_fit.train_end.date().isoformat(),
+    "forecast_horizon_months": CONFIG["future_horizon_months"],
+    "simulations": CONFIG["n_future_simulations"],
+    "hotspot_threshold": future_hotspot_threshold,
+    "converged": future_fit.converged,
+    "aic": float(getattr(future_fit.result, "aic", np.nan)),
+}])
+model_summaries = pd.concat([model_summaries, future_model_summary], ignore_index=True)
+model_summaries.to_csv(OUTPUT_DIR / "forecast_model_summary.csv", index=False)
+
+display(future_county.sort_values(["horizon", "exceedance_probability"], ascending=[True, False]).groupby("horizon").head(5))
+display(future_h1_summary)
+
+# ---- Direct versus model-induced H1 comparison and saved comparison plot ----
+
+fig, ax = plt.subplots(figsize=(10, 4.8))
+hist = statewide_series(future_train)
+ax.plot(hist["date"], hist["statewide_rate"], color="#111111", lw=1.5, label="Observed through 2023")
+ax.plot(future_state["date"], future_state["predicted_median_rate"], color="#2a9d8f", marker="o", lw=1.7, label="Forecast median")
+ax.fill_between(future_state["date"], future_state["statewide_rate_lower_80"], future_state["statewide_rate_upper_80"], color="#2a9d8f", alpha=0.18, label="80% interval")
+ax.fill_between(future_state["date"], future_state["statewide_rate_lower_95"], future_state["statewide_rate_upper_95"], color="#2a9d8f", alpha=0.09, label="95% interval")
+ax.set_title("Future statewide overdose rate forecast trained through December 2023")
+ax.set_xlabel("Month")
+ax.set_ylabel("Deaths per capita")
+ax.legend(fontsize=8)
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"future_statewide_rate_forecast_band.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+fig, ax = plt.subplots(figsize=(9, 4.8))
+ax.plot(future_expected_counts["horizon"], future_expected_counts["median_exceeding_counties"], marker="o", color="#264653", label="Median")
+ax.fill_between(future_expected_counts["horizon"], future_expected_counts["lower_80"], future_expected_counts["upper_80"], color="#e9c46a", alpha=0.35, label="80% interval")
+ax.fill_between(future_expected_counts["horizon"], future_expected_counts["lower_95"], future_expected_counts["upper_95"], color="#f4a261", alpha=0.18, label="95% interval")
+ax.set_title("Forecast number of counties above the hotspot threshold")
+ax.set_xlabel("Forecast horizon in months")
+ax.set_ylabel("County count")
+ax.legend()
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"future_expected_exceeding_counties_by_horizon.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+for horizon in [1, 3, 6, 12]:
+    top = future_county[future_county["horizon"].eq(horizon)].sort_values("exceedance_probability", ascending=False).head(15).sort_values("exceedance_probability")
+    fig, ax = plt.subplots(figsize=(8, 5.8))
+    ax.barh(top["county"], top["exceedance_probability"], color="#457b9d")
+    ax.set_xlim(0, max(0.05, top["exceedance_probability"].max() * 1.15))
+    ax.set_title(f"Largest county hotspot probabilities, h = {horizon} months")
+    ax.set_xlabel("Forecast probability")
+    fig.tight_layout()
+    for ext in ["png", "pdf"]:
+        fig.savefig(FIGURE_DIR / f"future_top_county_exceedance_probabilities_h{horizon}.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+    plt.show()
+
+fig, ax = plt.subplots(figsize=(10, 4.8))
+ax.plot(observed_h1["date"], observed_h1["max_h1_persistence"], color="#111111", lw=1.4, label="Observed through 2023")
+ax.plot(future_h1_summary["date"], future_h1_summary["max_h1_median"], color="#2a9d8f", marker="o", lw=1.7, label="Model-induced median")
+ax.fill_between(future_h1_summary["date"], future_h1_summary["max_h1_lower_80"], future_h1_summary["max_h1_upper_80"], color="#2a9d8f", alpha=0.18, label="80% interval")
+ax.fill_between(future_h1_summary["date"], future_h1_summary["max_h1_lower_95"], future_h1_summary["max_h1_upper_95"], color="#2a9d8f", alpha=0.09, label="95% interval")
+ax.axhline(h1_threshold, color="#a23b72", ls=":", lw=1.1, label="Reference H1 threshold")
+ax.set_title("Future model-induced maximum H1 persistence forecast")
+ax.set_xlabel("Month")
+ax.set_ylabel("Max finite H1 persistence")
+ax.legend(fontsize=8)
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"future_h1_max_persistence_forecast_band.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+heat = future_h1_ranked_summary.pivot(index="rank", columns="horizon", values="persistence_median").sort_index()
+fig, ax = plt.subplots(figsize=(10, 5.5))
+im = ax.imshow(heat.to_numpy(), aspect="auto", cmap="viridis")
+ax.set_xticks(range(len(heat.columns)), heat.columns)
+ax.set_yticks(range(len(heat.index)), heat.index)
+ax.set_xlabel("Forecast horizon in months")
+ax.set_ylabel("H1 persistence rank")
+ax.set_title("Median forecast persistence by rank and horizon")
+fig.colorbar(im, ax=ax, label="Median persistence")
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"h1_ranked_persistence_forecast_heatmap.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+
+# ---- Forecast model comparison summary and recommended-model CSV outputs ----
+
+best_direct = future_direct_h1[future_direct_h1["model"].eq("h1_sarimax_scalar")].copy()
+if best_direct["forecast_mean"].isna().all():
+    best_direct = future_direct_h1[future_direct_h1["model"].eq("h1_recent_12_month_average")].copy()
+comparison = future_h1_summary.merge(
+    best_direct[["horizon", "date", "model", "forecast_mean", "lower_80", "upper_80", "lower_95", "upper_95", "prob_exceeds_h1_threshold"]],
+    on=["horizon", "date"],
+    how="left",
+).rename(columns={
+    "max_h1_median": "model_induced_median",
+    "max_h1_lower_80": "model_induced_lower_80",
+    "max_h1_upper_80": "model_induced_upper_80",
+    "max_h1_lower_95": "model_induced_lower_95",
+    "max_h1_upper_95": "model_induced_upper_95",
+    "model": "direct_h1_model",
+    "forecast_mean": "direct_forecast_mean",
+    "lower_80": "direct_lower_80",
+    "upper_80": "direct_upper_80",
+    "lower_95": "direct_lower_95",
+    "upper_95": "direct_upper_95",
+})
+comparison.to_csv(OUTPUT_DIR / "direct_vs_model_induced_h1_forecast_comparison.csv", index=False)
+
+fig, ax = plt.subplots(figsize=(9, 4.8))
+ax.plot(comparison["horizon"], comparison["model_induced_median"], marker="o", color="#2a9d8f", label="Model-induced median")
+ax.fill_between(comparison["horizon"], comparison["model_induced_lower_80"], comparison["model_induced_upper_80"], color="#2a9d8f", alpha=0.18, label="Model-induced 80%")
+ax.plot(comparison["horizon"], comparison["direct_forecast_mean"], marker="s", color="#a23b72", ls="--", label="Direct scalar forecast")
+ax.fill_between(comparison["horizon"], comparison["direct_lower_80"], comparison["direct_upper_80"], color="#a23b72", alpha=0.12, label="Direct 80%")
+ax.set_title("Direct scalar H1 forecast and model-induced H1 forecast")
+ax.set_xlabel("Forecast horizon in months")
+ax.set_ylabel("Max finite H1 persistence")
+ax.legend(fontsize=8)
+fig.tight_layout()
+for ext in ["png", "pdf"]:
+    fig.savefig(FIGURE_DIR / f"direct_vs_model_induced_h1_forecast_comparison.{ext}", dpi=180 if ext == "png" else None, bbox_inches="tight")
+plt.show()
+comparison
+
+model_comparison = statewide_metrics.sort_values(["holdout_year", "rmse_statewide_rate"]).copy()
+recommended = []
+for year, group in model_comparison.groupby("holdout_year"):
+    best = group.iloc[0]
+    recommended.append({"holdout_year": year, "best_statewide_rate_model_by_rmse": best["model"], "best_statewide_rate_rmse": best["rmse_statewide_rate"]})
+recommended_df = pd.DataFrame(recommended)
+model_comparison.to_csv(OUTPUT_DIR / "forecast_model_comparison_summary.csv", index=False)
+recommended_df.to_csv(OUTPUT_DIR / "forecast_recommended_models_by_holdout.csv", index=False)
+display_columns = [
+    "experiment",
+    "train_end",
+    "holdout_year",
+    "model",
+    "mae_statewide_rate",
+    "rmse_statewide_rate",
+    "predicted_sd_statewide_rate",
+    "correlation_squared_defined",
+]
+display(model_comparison[display_columns])
+display(recommended_df)
+
+# ---- Additional production source block ----
+
+figure_files = sorted([p for p in FIGURE_DIR.iterdir() if p.suffix.lower() in {".png", ".pdf"}])
+csv_files = sorted([p for p in OUTPUT_DIR.iterdir() if p.suffix.lower() == ".csv"])
+
+sources_used = pd.DataFrame([
+    {"source_type": "input", "path": str(CONFIG["counts_wide_path"].relative_to(HERE)), "description": "county-month overdose death counts"},
+    {"source_type": "input", "path": str(CONFIG["rates_wide_path"].relative_to(HERE)), "description": "county-month deaths per capita file used for consistency checks and population fallback"},
+    {"source_type": "input", "path": str(CONFIG["population_wide_path"].relative_to(HERE)), "description": "annual county population denominators"},
+    {"source_type": "input", "path": str(CONFIG["adjacency_path"].relative_to(HERE)), "description": "Ohio county adjacency file used to build the fixed complex"},
+    {"source_type": "input", "path": str(CONFIG["bootstrap_significance_path"].relative_to(HERE)), "description": "bootstrap H1 band used only as a reference threshold when available"},
+    {"source_type": "code", "path": "forecasting-vineyards.qmd", "description": "forecasting notebook source chunks for derived forecasting outputs"},
+    {"source_type": "code", "path": "vineyard/polygonal_surface.py", "description": "local exact Sublevel set persistence helper"},
+    {"source_type": "reference", "path": "https://otexts.com/fpp3/", "description": "Forecasting: Principles and Practice, third edition; simple methods, residual diagnostics, and bootstrap forecast intervals"},
+])
+sources_used.to_csv(OUTPUT_DIR / "forecast_sources_used.csv", index=False)
+
+validation_checks = pd.DataFrame([
+    {"check": "number of counties", "value": df_all["county"].nunique(), "passed": df_all["county"].nunique() == 88},
+    {"check": "number of observed months", "value": df_all["date"].nunique(), "passed": df_all["date"].nunique() == 213},
+    {"check": "all modeled rows have population", "value": int(df_all["population"].isna().sum()), "passed": not df_all["population"].isna().any()},
+    {"check": "2024 excluded from main model selection", "value": preliminary_df["date"].nunique(), "passed": preliminary_df["date"].nunique() > 0},
+    {"check": "holdout experiments completed", "value": len(holdout_outputs), "passed": len(holdout_outputs) == len(CONFIG["holdouts"])},
+    {"check": "count model convergence for holdouts", "value": bool(model_summaries.loc[model_summaries["fit_label"].str.contains("train_through"), "converged"].all()), "passed": bool(model_summaries.loc[model_summaries["fit_label"].str.contains("train_through"), "converged"].all())},
+    {"check": "future forecast generated for 88 counties and 12 horizons", "value": len(future_county), "passed": len(future_county) == 88 * CONFIG["future_horizon_months"]},
+    {"check": "future H1 computations succeeded", "value": len(future_h1_failures), "passed": len(future_h1_failures) == 0},
+    {"check": "CSV outputs saved", "value": len(csv_files), "passed": len(csv_files) >= 18},
+    {"check": "plot files saved", "value": len(figure_files), "passed": len(figure_files) >= 20},
+])
+validation_checks.to_csv(OUTPUT_DIR / "forecast_validation_checks.csv", index=False)
+figure_manifest = pd.DataFrame([{"figure": str(p.relative_to(OUTPUT_DIR)), "path": str(p)} for p in figure_files])
+figure_manifest.to_csv(OUTPUT_DIR / "forecast_figure_manifest.csv", index=False)
+
+summary_table = pd.DataFrame([
+    {"item": "data_date_range", "value": f"{df_all['date'].min().date()} to {df_all['date'].max().date()}"},
+    {"item": "excluded_preliminary_months", "value": f"{preliminary_df['date'].min().date()} to {preliminary_df['date'].max().date()}" if len(preliminary_df) else "none"},
+    {"item": "training_holdout_splits", "value": "; ".join([f"{s['experiment']}: train through {s['train_end'].date()}, forecast {s['holdout_start'].year}" for s in CONFIG["holdouts"]])},
+    {"item": "models_tried", "value": "seasonal naive, last observation, recent 12-month average, same-month historical mean, statewide SARIMAX, county negative-binomial, direct H1 scalar models, nonparametric residual-bootstrap scalar forecasts, STL/LOESS residual-bootstrap scalar forecasts"},
+    {"item": "holdout_simulations", "value": CONFIG["n_holdout_simulations"]},
+    {"item": "future_simulations", "value": CONFIG["n_future_simulations"]},
+    {"item": "recommended_county_model", "value": "county negative-binomial for county exceedance and model-induced H1, because it forecasts the county surface"},
+    {"item": "warnings", "value": "2024 observed months are treated as preliminary and excluded from main training/validation; zero-heavy county counts may motivate a future zero-inflated comparison."},
+])
+summary_table.to_csv(OUTPUT_DIR / "forecast_rebuild_final_summary.csv", index=False)
+
+display(validation_checks)
+display(summary_table)
+print(f"Saved {len(csv_files)} CSV files to {OUTPUT_DIR}")
+print(f"Saved {len(figure_files)} figure files to {FIGURE_DIR}")
+```
+
+
+## Limitations and Future Work
+
+Forecasting all county values is stronger than forecasting one topological summary, because the topology can be computed from the simulated county surface. But, as we saw above, our county negative-binomial model was not trustworthy. The 2023 decline in overdose deaths is a reminder that overdose dynamics can change faster than a simple univariate forecasting rule expects. That's why experts in this field include covariates in their models, with information about drug supply indicators, demographic structure, treatment access, reporting delays, policy, etc. We omitted those covariates to keep this file simple, as the main goal was to show how to forecast future max $H_1$ persistence, and how to report the resulting information to local health departments in a meaningful way.
+
+The statewide deaths-per-capita forecast was easier but ignores county heterogeneity. The maximum $H_1$ forecast keeps one topology-aware feature of the county surface but loses most of the county-level information. The categorical candidate-list forecast pairs the size of the strongest $H_1$ feature with a county label associated with that feature. It is useful as a proof of concept, but a serious operational version should include covariates and a stronger model for local mortality dynamics.
+
+The main take-away is that when a reliable county-level forecast is not yet available, forecasting vines like the max $H_1$ persistence (plus which county this occurs in) is more tractable and gives useful information about future spikes and hotspots. We plan to return to the question of forecasting future (county, month) death counts using more sophisticated models, in future work.
+
+## References
+
+[1] Anderson, F. *Logistic and Multinomial Regressions by Example: Hands on approach using R*, CreateSpace Independent Publishing Platform, 2016.
+
+[2] Choudhuri, S., Basu, K., Thomas, K., and Sen, A. (2019). Predicting future opioid incidences today. *arXiv:1906.08891*. https://arxiv.org/abs/1906.08891
+
+[3] Cohen-Steiner, D., Edelsbrunner, H., and Morozov, D. (2006). Vines and vineyards by updating persistence in linear time. *Proceedings of the Twenty-second Annual Symposium on Computational Geometry*, 119-126. https://doi.org/10.1145/1137856.1137877
+
+[4] Cohen-Steiner, D., Edelsbrunner, H., and Harer, J. (2007). Stability of persistence diagrams. *Discrete & Computational Geometry*, 37, 103-120.
+
+[5] Edelsbrunner, H. and Harer, J. (2010). *Computational Topology: An Introduction*. American Mathematical Society.
+
+[6] Ertugrul, A. M., Lin, Y.-R., and Taskaya-Temizel, T. (2020). CASTNet: Community-attentive spatio-temporal networks for opioid overdose forecasting. In Machine Learning and Knowledge Discovery in
+Databases, pp. 432–448. Springer, 2020. doi: 10.1007/978-3-030
+-46133-1_26
+
+[7] Gidea, M. and Katz, Y. (2018). Topological data analysis of financial time series: Landscapes of crashes. *Physica A*, 491, 820-834.
+
+[8] Hepler, S. A., McKnight, E., Bonny, A. E., and Kline, D. M. (2019). A latent spatial factor approach for synthesizing opioid-associated deaths and treatment admissions in Ohio counties. *Epidemiology*, 30(3), 365-370.
+
+[9] Hickok, A., Needell, D., and Porter, M. A. (2022). Analysis of spatial and spatiotemporal anomalies using persistent homology: Case studies with COVID-19 data. *SIAM Journal on Mathematics of Data Science*, 4(3), 1116-1144. https://doi.org/10.1137/21M1435033
+
+[10] Hilbe, J. M. (2011). *Negative Binomial Regression*. Cambridge University Press.
+
+[11] Hyndman, R. J. and Athanasopoulos, G. (2021). *Forecasting: Principles and Practice*, 3rd edition. https://otexts.com/fpp3/
+
+[12] Kline, D. M., Ji, C., and Hepler, S. A. (2021). A multivariate spatio-temporal model of the opioid epidemic in Ohio: a factor model approach. *Health Services and Outcomes Research Methodology*, 21(1), 42-53.
+
+[13] Liu, X., Carter, J., Ray, B., and Mohler, G. (2020). Point process modeling of drug overdoses with heterogeneous and missing data. Annals of Applied Statistics, volume 15, issue 1, DOI 10.1214/20-AOAS1384. 
+
+[14] Lo, D. and Park, B. (2016). Modeling the spread of the Zika virus using topological data analysis. *arXiv:1612.03554*. https://arxiv.org/abs/1612.03554
+
+[15] Mullen, A. D., Harris, D., Rock, P., Slavova, S., Talbert, J., and Bumgardner, V. K. C. (2025). Forecasting opioid incidents for rapid actionable data for opioid response in Kentucky.     Drug and Alcohol Dependence 267:111705, DOI 10.1016/j.drugalcdep.2024.111705
+
+[16] Neill, D. B. and Herlands, W. (2018). Machine learning for drug overdose surveillance. Journal of Technology in Human Services, 36(1):8–14,
+2018. doi: 10.1080/15228835.2017.1416511
+
+[17] Shumway, R. H. and Stoffer, D. S. (2017). *Time Series Analysis and Its Applications: With R Examples*, 4th edition. Springer.
+
+[18] Soliman, M., Lyubchich, V., and Gel, Y. R. (2020). Ensemble forecasting of the Zika space-time spread with topological data analysis. Environmetrics,
+31(7):e2629.
+
+[19] Turner, K. (2023). Representing vineyard modules. *arXiv:2307.06020*. https://arxiv.org/abs/2307.06020
+
+[20] White, D., Tran, L., and Ma, L. (2021). A statistical analysis of drug seizures and opioid overdose deaths in Ohio from 2014 to 2018. *Journal of Student Research*, 10(1). https://doi.org/10.47611/jsr.v10i1.786
+
+[21] Yang, J., Fang, H., Dhesi, J., Yoon, I. H. R., Bull, J. A., Byrne, H. M., Harrington, H. A., and Grindstaff, G. (2025). Topological classification of tumour-immune interactions and dynamics. Journal of Mathematical
+Biology, 91(3):25, doi: 10.1007/s00285-025-02253-6.

@@ -1,0 +1,4 @@
+holdout_year,training_cutoff,model,method_family,mae_max_h1,rmse_max_h1,passes_residual_screen
+2021,2020-12,"threshold AR, lag 3, delay 2",threshold autoregression,2.2e-05,2.6e-05,True
+2022,2021-12,"SARIMA(2,0,1), no seasonal terms",SARIMA,5.6e-05,0.000104,True
+2023,2022-12,"threshold AR, lag 3, delay 1",threshold autoregression,3e-05,3.5e-05,True

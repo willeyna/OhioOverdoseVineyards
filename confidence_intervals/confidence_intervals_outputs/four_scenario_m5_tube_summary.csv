@@ -1,0 +1,5 @@
+scenario,B_successful,radius_95_global,radius_mean_global,radius_sd_global,title,units,threshold_95_global,model,B_requested,seed,nb_alpha,source
+cumulative_population_normalized,200,0.0009739295105662197,0.0006777157473899735,0.0001533063444831743,Cumulative population-normalized deaths,cumulative deaths per capita,0.0019478590211324395,M5_nb_low_rank_K5,200,20260613,0.0058139217490357,model_comparison.csv
+cumulative_raw_death_counts,200,232.67459110968645,156.8485490678045,40.8214498907386,Cumulative raw death counts,cumulative deaths,465.3491822193729,M5_nb_low_rank_K5,200,20260613,0.0058139217490357,model_comparison.csv
+monthly_population_normalized,200,0.0002726200148374,0.0001881170452248345,4.044454154415334e-05,Monthly population-normalized deaths,deaths per capita,0.0005452400296748,M5_nb_low_rank_K5,200,20260613,0.0058139217490357,model_comparison.csv
+monthly_raw_death_counts,200,32.96675569833665,25.71717477754494,4.407813239732217,Monthly raw death counts,deaths,65.9335113966733,M5_nb_low_rank_K5,200,20260613,0.0058139217490357,model_comparison.csv

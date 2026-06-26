@@ -1,0 +1,4 @@
+threshold_name,definition,threshold,radius,n_observed_points_above,n_months_above
+old_max_simulated_persistence_global,95th percentile of max H1 persistence in each full M5 simulated history,0.0005900524105376,,0,0
+new_global_bottleneck_perturbation,2 times the 95th percentile of max monthly bottleneck perturbation around fitted M5 diagrams,0.0005468322787282,0.0002734161393641,0,0
+monthwise_bottleneck_perturbation_sheet,2 times the monthwise 95th percentile of bottleneck perturbation around fitted M5 diagrams,0.0001806946433872,9.034732169361868e-05,18,18

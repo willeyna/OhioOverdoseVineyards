@@ -1,0 +1,6 @@
+method,n_months
+bottleneck monthwise sheet,18
+bottleneck global plane,0
+scalar monthwise any rank,171
+scalar global rank any rank,8
+scalar global all ranks,1

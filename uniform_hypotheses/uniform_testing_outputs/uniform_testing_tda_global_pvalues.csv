@@ -1,0 +1,9 @@
+null,scalar_field,statistic,observed,null_mean,null_sd,n_null_geq_observed,B,empirical_p_greater
+per_capita_population_weighted,deaths_per_capita,max_h1_persistence__max,0.0004770613023773555,0.00027908812023227426,4.17796103437866e-05,0,1000,0.0
+per_capita_population_weighted,deaths_per_capita,max_h1_persistence__sum,0.025238841910024602,0.023835375389285346,0.00046310221691038447,2,1000,0.002
+per_capita_population_weighted,deaths_per_capita,total_h1_persistence__max,0.0010233071497754217,0.0008543279480652213,6.954485988302401e-05,24,1000,0.024
+per_capita_population_weighted,deaths_per_capita,total_h1_persistence__sum,0.09919629676977004,0.09654382840008995,0.0013201990095451296,26,1000,0.026
+raw_equal_county,raw_deaths,max_h1_persistence__max,108.0,15.301,1.2593589579563822,0,1000,0.0
+raw_equal_county,raw_deaths,max_h1_persistence__sum,8937.0,1783.433,16.692757685869616,0,1000,0.0
+raw_equal_county,raw_deaths,total_h1_persistence__max,270.0,63.719,4.290040028186619,0,1000,0.0
+raw_equal_county,raw_deaths,total_h1_persistence__sum,27958.0,7563.527,86.87713685376555,0,1000,0.0

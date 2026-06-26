@@ -1,0 +1,13 @@
+preprocessing_mode,null_type,B_requested,B_successful,T_sep_obs,T_sep_rel_obs,p_T_sep_upper,p_T_sep_rel_upper
+raw_rate,countywise_circular_shift,200,200,3.586062275483844e-20,0.0461760706690161,0.0,0.0
+raw_rate,global_time_block_permutation,200,200,3.586062275483844e-20,0.0461760706690161,0.0,0.0
+raw_rate,separable_gaussian_matrix_normal,200,200,3.586062275483844e-20,0.0461760706690161,0.0,0.0
+county_centered,countywise_circular_shift,200,200,3.651321745382491e-20,0.0720677727034476,0.0,0.0
+county_centered,global_time_block_permutation,200,200,3.651321745382491e-20,0.0720677727034476,0.0,0.0
+county_centered,separable_gaussian_matrix_normal,200,200,3.651321745382491e-20,0.0720677727034476,0.0,0.0
+month_centered,countywise_circular_shift,200,200,9.719607983780544e-21,0.0215491723986231,0.0,0.0
+month_centered,global_time_block_permutation,200,200,9.719607983780544e-21,0.0215491723986231,0.0,0.0
+month_centered,separable_gaussian_matrix_normal,200,200,9.719607983780544e-21,0.0215491723986231,0.0,0.0
+two_way_centered,countywise_circular_shift,200,200,1.808314572332885e-21,0.0064496517239974,0.0,0.0
+two_way_centered,global_time_block_permutation,200,200,1.808314572332885e-21,0.0064496517239974,0.0,0.0
+two_way_centered,separable_gaussian_matrix_normal,200,200,1.808314572332885e-21,0.0064496517239974,0.0,0.0

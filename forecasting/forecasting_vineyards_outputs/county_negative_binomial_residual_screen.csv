@@ -1,0 +1,4 @@
+experiment,train_end,holdout_year,pooled_lag1_residual_autocorrelation,pooled_lag12_residual_autocorrelation,county_lag1_residual_autocorrelation_median,county_lag12_residual_autocorrelation_median,n_counties_ljung_box_reject_bh_0_05,prop_counties_ljung_box_reject_bh_0_05,mean_monthly_residual_morans_i,median_monthly_residual_morans_i,n_months_residual_morans_i_reject_bh_0_05,prop_months_residual_morans_i_reject_bh_0_05,passes_residual_screen
+A,2021-12-01,2022,0.5097669302078799,-0.002613005589424038,-0.06539042365031413,,1,0.011363636363636364,0.03749232833934122,0.05198625447315743,0,0.0,False
+B,2022-12-01,2023,0.6017345705309829,-0.05821956548260504,-0.04575655653885737,,0,0.0,0.038194131104790675,0.04059164901057087,0,0.0,False
+C,2020-12-01,2021,0.4183743728045956,-0.0269735442964611,-0.057324435459112436,,0,0.0,0.04408186900085154,0.034530198977707496,0,0.0,False

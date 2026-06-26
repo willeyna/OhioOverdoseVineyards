@@ -1,0 +1,2 @@
+model_name,pearson_rss,pooled_lag1_residual_acf,pooled_lag12_residual_acf,max_abs_pooled_acf_lag_1_to_24,county_ljung_box_lag12_prop_p_lt_0_05,county_ljung_box_lag12_prop_q_lt_0_05
+selected negative-binomial model,18090.464850240467,0.0048634519876729985,-0.00777155204913618,,,

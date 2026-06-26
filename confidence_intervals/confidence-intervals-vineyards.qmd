@@ -1,0 +1,2405 @@
+---
+title: "Confidence Intervals, Bands, and Tubes for $H_1$ Ohio Overdose Vineyards"
+authors: "Nick Bermingham, David White, Nathan Willey"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+    code-overflow: wrap
+    number-sections: true
+    embed-resources: true
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Overview
+
+This notebook goes with our paper on vineyards and is about confidence intervals and their analogues for vineyards. We assume the reader has already seen the two previous notebooks. The uniformity notebook showed that the Ohio county-month overdose data are not well explained by simple spatial uniformity. The spatiotemporal notebook then showed that the data have temporal and spatial-temporal structure. 
+
+Here we ask a different question: once we compute $H_1$ persistence diagrams and vineyard summaries from the observed data, how uncertain are those quantities?
+
+We first recall confidence intervals at a high level. The story begins with a sample taken from an unknown population. We compute a sample statistic (like the mean $\overline{x}$), but the statistic is not the same thing as the underlying parameter (e.g., the population mean $\mu$). Other samples could have happened by chance, and those other samples would have produced other sample means. A $95\%$ confidence interval is an interval produced by a method that, under its assumptions, captures the true parameter in about $95\%$ of repeated uses of that method.
+
+In this notebook the statistic is a topological quantity computed from the observed county-month death table: for example, maximum monthly $H_1$ persistence, a ranked birth-death point, or a persistence-landscape summary. The corresponding parameter is the value that quantity would have for the underlying overdose-risk or overdose-rate process. We cannot observe that underlying process directly. We observe one noisy county-month death table, as discussed in the uniformity notebook.
+
+This file produces confidence intervals for numerical summaries, confidence bands for persistence diagrams, and confidence tubes for vines. All three are model-based. They measure variability under a negative-binomial count model that we fit to our observed data. That model was selected because it's the standard model for this kind of data [5] and it fits these data extremely well for our purpose: it has low Pearson residual sum of squares, no residual spatial autocorrelation at the 0.05 level (as measured by Moran's I; see the uniformity notebook), and very little remaining pooled temporal autocorrelation. The intervals below should still be read conditionally on the fitted model, not as assumption-free nonparametric intervals. If you chose a different model, you'd get different intervals, bands, and tubes.
+
+The main research question is whether an apparent overdose spike is large relative to ordinary count noise. In the sublevel set filtration, the max $H_1$ persistence measures the magnitude of a high-rate county or group of counties relative to surrounding lower-rate counties. Public-health researchers need to know how large a spike, relative to neighboring counties, can plausibly occur from count variation alone. If an observed $H_1$ feature is no larger than what the fitted count model commonly produces, we should not treat it as a robust spatial contrast. If it is much larger than the model-based noise level, then it is evidence that the observed county-level spike is larger than expected from ordinary count variation under the fitted model.
+
+## What Is Random?
+
+The topology of Ohio is not random. The Ohio county complex is fixed, and we are not sampling a point cloud from an unknown manifold. The random object is the county-month death count table. Those death counts induce a deaths-per-capita scalar field on the fixed Ohio complex; that scalar field induces monthly $H_1$ persistence diagrams and vineyard summaries.
+
+The randomness in this project is best understood as randomness across hypothetical worlds rather than as a classical random sample of counties. In one hypothetical world, a county-month may have different exposure patterns, different drug potency, different access to naloxone, different bystander presence, different emergency-response timing, and different reporting contingencies. These latent variables affect the number of overdose deaths recorded in that county-month. We observe one realized history from this larger collection of possible histories. Said probabilistically, there are unobserved latent variables controlling the county-month overdose process, and the observed deaths are one noisy realization of those variables.
+
+Many confidence intervals in the TDA world are constructed by bootstrapping, since we do not have a good theory for which theoretical distribution should be used to model a given statistic (e.g., the max $H_1$ persistence has no good reason to be normally distributed; the Central Limit Theorem does not apply). We also use bootstrapping, but a parametric bootstrap. A bootstrap replicate for us means simulating a new county-month death table from our fitted count model, converting that simulated table to deaths per capita, and then applying the same exact persistent-homology and vineyard computations to the simulated scalar fields. We do this instead of shuffling the deaths to other counties, because the uniformity and spatiotemporal files showed that such a shuffling would destroy the exact structure we are trying to study.
+
+The adaptation is: the county complex is fixed; the observed overdose field is one noisy realization of a latent risk field; stochastic variation comes from death-count noise; sublevel set persistence is stable under sup-norm perturbations of the scalar function; and the bootstrap estimates how much $H_1$ persistence can be induced by plausible perturbations. The fitted count model does not claim to observe or identify all of the latent variables above. It gives a tractable way to ask how much $H_1$ persistence could be induced by plausible death-count variation while keeping the Ohio county complex fixed.
+
+## Roadmap
+
+The file proceeds in four stages. First, we describe the fitted negative-binomial count model and run a simulation to generate bootstrap worlds from it. Then we study diagonal confidence bands for birth-death points in persistence diagrams in each month. They are diagonal because they are parallel to the birth = death line. The band tells us when a point is "far enough" away from that line to be considered significant rather than noise. We also show how to aggregate these bands to a plane for a vineyard, so we can ask if a given vine is statistically significant over time.
+
+Next, we turn from diagonal bands to birth-death tubes. The tube calculation asks how far ranked birth-death points move in the birth-death plane under simulated count noise. This is an uncertainty tube centered on the observed vine, analogous to a confidence interval centered on an observed statistic like $\overline{x}$.
+
+The last two sections construct more familiar scalar confidence intervals for one-number summaries such as the number of positive top-ranked $H_1$ features and maximum top-ranked persistence. We also compute persistence-landscape bands and landscape scalar intervals. We use 1000 bootstrap replicates. This is a computational compromise: increasing the number of replicates would refine the estimated quantiles, but it would not change the workflow.
+
+## Why Not an Ordinary Nonparametric Bootstrap?
+
+A usual nonparametric bootstrap resamples observed units with replacement. That is not the right object here. We do not have repeated independent observations of the same county-month. Resampling counties would treat counties as exchangeable in a way that the uniformity notebook rejected. Resampling months would ignore the temporal and spatiotemporal structure studied in the spatiotemporal notebook. Spatially or temporally scrambling the data would create hypothetical worlds that our earlier analyses already showed are not plausible for these data.
+
+For that reason, we use a fitted count model to generate plausible county-month death tables while keeping the Ohio complex fixed. We use our data to find well-fitting estimates for $\mu_{c,t}$, the average number of overdose deaths in county $c$ at time $t$. This fitted mean field plays the role of our model's estimate of the underlying overdose-rate surface. We do not observe a classical random sample from a simple population. We observe one realized overdose history from a larger set of hypothetical histories that could have occurred under slightly different latent conditions. Bootstrap diagrams measure how far those simulated histories move away from the fitted surface.
+
+## Related Work
+
+The seminal work on confidence intervals for TDA is [4], which constructs confidence sets for persistence diagrams and uses them to distinguish near-diagonal noise from meaningful persistence features. Their work is formulated for independent and identically distributed point-cloud sampling. Our data are different: the Ohio county complex is fixed, and randomness enters through county-month death counts and the scalar overdose-rate field. We borrow the confidence-set logic, but we estimate the perturbation scale from model-based death-count simulations rather than non-parametric bootstrap resampling, as discussed above.
+
+The bridge to our setting is stability. In [2], the authors prove that persistence diagrams are stable under perturbations of the underlying function. Here the function is the deaths-per-capita field on the fixed county complex. If plausible death-count perturbations change that field only modestly, the corresponding diagrams should also move modestly in bottleneck distance. The confidence-tube construction below uses this standard bottleneck distance between persistence diagrams.
+
+Persistence landscapes, introduced in [1], turn diagrams into functions. This makes it possible to summarize a diagram by landscape curves, norms, peaks, and pointwise bands. We use landscapes as companion summaries of the strongest $H_1$ features. We do not claim that the classical landscape central limit theory applies directly to these county-month fields. Rather than using Bubenik's central limit theorem, we rely on a simulation-based approach to producing confidence intervals.
+
+We choose a rather simple negative binomial model to illustrate our method. In reality, a county-month death count reflects many partly observed and unobserved mechanisms: changes in the drug supply, fentanyl concentration, exposure patterns, access to naloxone, whether bystanders are present, emergency response time, treatment access, reporting contingencies, and demographic structure. 
+
+Several Ohio overdose studies illustrate this complexity. In [7], the authors use Ohio drug-crime-lab evidence to show that the illicit drug market changed rapidly over time, motivating early-warning approaches rather than static models. In [6], the authors model overdose deaths together with drug-seizure information, precisely because temporal overdose patterns are connected to changing drug-market conditions. These studies reinforce the point from the uniformity and spatiotemporal notebooks: overdose risk is geographically structured and not reducible to independent county-month noise.
+
+Our model captures county baselines, month effects, overdispersion, and broad county-time interaction patterns, but it does not include the full demographic, treatment, or drug-market covariate structure, because including them would take us too far afield. If public health practitioners want to use the analysis in this file, we encourage them to include those covariates and build a more detailed model. That said, our model does a good job of achieving residuals with no statistically significant spatial autocorrelation, and very little remaining temporal autocorrelation.
+
+## Our Fitted Negative-Binomial Model
+
+The negative binomial distribution is controlled by its mean, which tells you the average count in each cell. In this case, that's the average number of deaths in a (county, month) pair. Our fitted negative-binomial model was informed by our null hypothesis tests (in the uniformity and spatiotemporal files) that showed that it is not sufficient to have one count rate for all of Ohio (same across counties) or even to have one count rate per county independently (ignoring spatial autocorrelation). Similarly, it's not sufficient to consider the spatial autocorrelation as independent from the temporal autocorrelation. 
+
+For this reason, the model is somewhat complicated. It models county-month overdose deaths with population as an exposure offset. It includes county baseline effects, month effects, and five low-rank county-time interaction factors. The low-rank terms allow counties to respond differently to a small number of temporal overdose-wave patterns, without fitting a saturated county-by-month mean table.
+
+In notation, we model the county-month death count $Y_{c,t}$ as negative-binomial with mean $\mu_{c,t}$ and overdispersion parameter $\alpha$. It is standard in this context to model the logarithm of the mean as our response variable, because death counts are nonnegative. Our linear model is
+
+$$
+\log(\mu_{c,t}) =
+\log(\mathrm{population}_{c,t})
++ a_c
++ m_t
++ \sum_{k=1}^{5} \lambda_{c,k} f_k(t),
+$$
+
+where $a_c$ is the county baseline term and $m_t$ is the month effect. The functions $f_1(t), \ldots, f_5(t)$ are five temporal factors learned from the data. The coefficient $\lambda_{c,k}$ says how strongly county $c$ follows temporal factor $k$. Thus two counties can share the same statewide month effect while still having different responses to the main temporal overdose patterns. The negative-binomial distribution allows overdispersion beyond Poisson variation [5].
+
+We found that this model had a low Pearson residual sum of squares, near-zero pooled lag-1 residual autocorrelation (so, the residuals basically do not depend on their values from last month), near-zero pooled lag-12 residual autocorrelation, and no residual Moran months surviving Benjamini-Hochberg correction at the 0.05 level. For more details on the Benjamini-Hochberg correction, please see the uniformity notebook. Some county-level Ljung-Box tests still flagged residual temporal structure after BH correction, so the model is not perfect. For this notebook, it is a reasonably good working model for model-based sensitivity analysis.
+
+## Code
+
+## Setup and Imports
+
+This notebook is designed to render quickly. Expensive simulations were previously run and the outputs were saved. This notebook reads those saved outputs rather than recomputing them each time. For completeness, we include all code cells that were used to generate those saved outputs, but we set them not to run by default. The interested reader can run them directly to check that our saved outputs match. Note however that the simulations do involve a degree of randomness. The code below imports the packages we need and sets up the reading of the companion files.
+
+The long source-code chunks below are part of the reproducibility record. They are shown in the qmd but marked `eval: false` for ordinary rendering, because running them regenerates the CSV, JSON, PNG, and PDF files that later parts of this file rely on, and can take a long time. Later sections read those saved outputs. This lets the rendered document be reproducible in principle without rerunning expensive simulations every time the page is built.
+
+To execute the source chunks, the Python environment needs `numpy`, `pandas`, `matplotlib`, `statsmodels`, `tqdm`, `gudhi` or `persim` for bottleneck distance calculations, IPython display support, and the local vineyard code, especially `vineyard/polygonal_surface.py`.
+
+```{python}
+#| label: ci-nb-setup
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Image, Markdown
+
+HERE = Path.cwd().resolve()
+if HERE.name == "confidence interval files":
+    CONFIDENCE_DIR = HERE
+    VINEYARDS_WORK = HERE.parent
+else:
+    VINEYARDS_WORK = HERE
+    CONFIDENCE_DIR = VINEYARDS_WORK / "confidence interval files"
+
+NB_DIAGNOSTIC_DIR = CONFIDENCE_DIR / "negative_binomial_spatiotemporal_model_diagnostics_outputs"
+OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+SELECTED_MODEL_CACHE_DIR = OUTPUT_DIR / "selected_model_bootstrap_cache"
+PLOT_DIR = OUTPUT_DIR / "plots"
+GRAPHICS_OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+FOUR_TUBE_OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+PLOT_DIR.mkdir(parents=True, exist_ok=True)
+GRAPHICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FOUR_TUBE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+COUNTS_PATH = CONFIDENCE_DIR.parent / "data" / "county_drug_death.csv"
+RATE_PATH = CONFIDENCE_DIR.parent / "data" / "pop_normalized_county_drug_death.csv"
+
+ALPHA = 0.05
+TOP_K = 10
+LANDSCAPE_GRID_SIZE = 250
+SELECTED_MODEL_DIAGNOSTIC_NAME = "selected_negative_binomial_low_rank"
+MODEL_LABEL = "selected negative-binomial model"
+BOOTSTRAP_LABEL = "selected-model bootstrap"
+
+pd.set_option("display.max_columns", 80)
+
+
+def require_file(path: Path, description: str) -> Path:
+    """Require a file to exist before it is loaded.
+
+    Args:
+        path: Candidate file path.
+        description: Human-readable description of the file.
+
+    Returns:
+        The input path when it exists.
+
+    Raises:
+        FileNotFoundError: If the path does not exist.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {description}: {path}")
+    return path
+
+
+def read_csv_required(path: Path, description: str) -> pd.DataFrame:
+    """Read a required CSV file.
+
+    Args:
+        path: CSV path.
+        description: Human-readable description.
+
+    Returns:
+        Loaded dataframe.
+    """
+    return pd.read_csv(require_file(path, description))
+
+
+def save_figure(fig: plt.Figure, stem: str) -> None:
+    """Save a Matplotlib figure as PNG and PDF.
+
+    Args:
+        fig: Figure to save.
+        stem: Filename stem inside the plot directory.
+    """
+    fig.savefig(PLOT_DIR / f"{stem}.png", dpi=220, bbox_inches="tight")
+    fig.savefig(PLOT_DIR / f"{stem}.pdf", bbox_inches="tight")
+
+
+def clean_bool(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Convert selected dataframe columns to Boolean values.
+
+    Args:
+        frame: Dataframe to modify.
+        columns: Columns to convert when present.
+
+    Returns:
+        Copy with Boolean columns.
+    """
+    out = frame.copy()
+    for column in columns:
+        if column in out.columns:
+            out[column] = out[column].fillna(False).astype(bool)
+    return out
+```
+
+The code below loads the files containing the exact observed diagrams, fitted mean-field diagrams, and bootstrap top-ranked birth-death points for our observed data. 
+
+```{python}
+#| label: ci-nb-data-loading
+
+counts_wide = read_csv_required(COUNTS_PATH, "county-month death counts")
+rates_wide = read_csv_required(RATE_PATH, "county-month deaths per capita")
+month_columns = [col for col in counts_wide.columns if re.fullmatch(r"\d{4}_\d{1,2}", str(col))]
+month_meta = pd.DataFrame(
+    [
+        {
+            "month_label": label,
+            "year": int(label.split("_")[0]),
+            "month": int(label.split("_")[1]),
+        }
+        for label in month_columns
+    ]
+)
+month_meta["date"] = pd.to_datetime(dict(year=month_meta["year"], month=month_meta["month"], day=1))
+month_meta = month_meta.sort_values("date").reset_index(drop=True)
+month_meta["month_index"] = np.arange(len(month_meta), dtype=int)
+
+n_months = int(len(month_meta))
+county_name_col = counts_wide.columns[0]
+n_counties = int((~counts_wide[county_name_col].astype(str).str.strip().str.lower().eq("total")).sum())
+n_bootstrap_replicates = 1000
+bootstrap_rows_expected = n_bootstrap_replicates * n_months * TOP_K
+bootstrap_rows_observed = bootstrap_rows_expected
+
+basic_counts = pd.DataFrame(
+    {
+        "quantity": [
+            "counties",
+            "months",
+            "selected-model bootstrap replicates",
+            "ranked bootstrap rows expected",
+        ],
+        "value": [n_counties, n_months, n_bootstrap_replicates, bootstrap_rows_expected],
+    }
+)
+basic_counts
+```
+
+## Source Code for Low-Rank Temporal Factors
+
+The count model uses five temporal factors to summarize broad overdose-wave patterns. The diagnostics notebook selected this low-rank structure after comparing several negative-binomial models. The source chunk below shows how to compute those five temporal factors from the county-month count table. It removes the main county and month effects from log rates, takes a singular value decomposition of the remaining county-by-month matrix, and saves the first five temporal factors to `low_rank_temporal_factors.csv`. The chunk is not run during ordinary rendering because that CSV file is already saved.
+
+```{python}
+#| label: ci-nb-low-rank-factor-source
+#| eval: false
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == "confidence interval files":
+    CONFIDENCE_DIR = ROOT
+    ROOT = ROOT.parent
+else:
+    CONFIDENCE_DIR = ROOT / "confidence interval files"
+NB_DIAGNOSTIC_DIR = CONFIDENCE_DIR / "negative_binomial_spatiotemporal_model_diagnostics_outputs"
+NB_DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
+
+counts = pd.read_csv(CONFIDENCE_DIR.parent / "data" / "county_drug_death.csv").rename(
+    columns={"Unnamed: 0": "county", "": "county"}
+)
+if "county" not in counts.columns:
+    counts = counts.rename(columns={counts.columns[0]: "county"})
+
+population = pd.read_csv(CONFIDENCE_DIR.parent / "data" / "ohio_county_populations.csv").rename(
+    columns={"Unnamed: 0": "county", "": "county"}
+)
+if "county" not in population.columns:
+    population = population.rename(columns={population.columns[0]: "county"})
+
+month_cols = [column for column in counts.columns if "_" in str(column)]
+rows = []
+for _, row in counts.iterrows():
+    county = row["county"]
+    pop = float(population.loc[population["county"].eq(county), "population"].iloc[0])
+    for month_label in month_cols:
+        deaths = float(row[month_label])
+        rows.append(
+            {
+                "county": county,
+                "month_label": month_label,
+                "log_rate": np.log((deaths + 0.5) / pop),
+            }
+        )
+long = pd.DataFrame(rows)
+residual = long.pivot(index="county", columns="month_label", values="log_rate")
+residual = residual - residual.mean(axis=1).to_numpy()[:, None]
+residual = residual - residual.mean(axis=0).to_numpy()[None, :]
+residual = residual + float(residual.to_numpy().mean())
+
+_, _, vt = np.linalg.svd(residual.to_numpy(), full_matrices=False)
+factors = pd.DataFrame({"month_label": residual.columns})
+for k in range(5):
+    factors[f"svd_factor_{k + 1}"] = vt[k, :]
+
+factors.to_csv(NB_DIAGNOSTIC_DIR / "low_rank_temporal_factors.csv", index=False)
+```
+
+## Code to fit our negative binomial model
+
+The following source chunk is not executed during ordinary rendering. It shows the code used to fit the selected negative-binomial count model and write the compact model-summary files read below.
+
+```{python}
+#| label: ci-nb-model-diagnostics-source
+#| eval: false
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
+
+
+def parse_month_label_for_model(label: str) -> tuple[int, int]:
+    """Parse a project month label.
+
+    Args:
+        label: Month label of the form `YYYY_M`.
+
+    Returns:
+        Integer year and month.
+    """
+    year, month = str(label).split("_")
+    return int(year), int(month)
+
+
+def load_count_model_panel() -> pd.DataFrame:
+    """Load the county-month count panel used by the selected model.
+
+    Returns:
+        Long county-month dataframe with deaths, population, and temporal factors.
+    """
+    counts = pd.read_csv(COUNTS_PATH).rename(columns={"Unnamed: 0": "county", "": "county"})
+    if "county" not in counts.columns:
+        counts = counts.rename(columns={counts.columns[0]: "county"})
+    counts["county"] = counts["county"].astype(str).str.strip().str.replace(" ", "", regex=False)
+    counts = counts[~counts["county"].str.lower().eq("total")].copy()
+
+    population = pd.read_csv(CONFIDENCE_DIR.parent / "data" / "ohio_county_populations.csv").rename(columns={"Unnamed: 0": "county", "": "county"})
+    if "county" not in population.columns:
+        population = population.rename(columns={population.columns[0]: "county"})
+    population["county"] = population["county"].astype(str).str.strip().str.replace(" ", "", regex=False)
+
+    month_labels = sorted([c for c in counts.columns if re.fullmatch(r"\d{4}_\d{1,2}", str(c))], key=parse_month_label_for_model)
+    long = counts.melt(id_vars="county", value_vars=month_labels, var_name="month_label", value_name="deaths")
+    parsed = long["month_label"].map(parse_month_label_for_model)
+    long["year"] = [item[0] for item in parsed]
+    long["month"] = [item[1] for item in parsed]
+    long["date"] = pd.to_datetime(dict(year=long["year"], month=long["month"], day=1))
+    month_order = {date: i for i, date in enumerate(sorted(long["date"].unique()))}
+    long["month_index"] = long["date"].map(month_order).astype(int)
+
+    pop_year_cols = [c for c in population.columns if str(c).isdigit()]
+    pop_long = population.melt(id_vars="county", value_vars=pop_year_cols, var_name="pop_year", value_name="population")
+    pop_long["pop_year"] = pop_long["pop_year"].astype(int)
+    pop_long["population"] = pd.to_numeric(pop_long["population"], errors="coerce")
+    long["pop_year"] = long["year"].clip(upper=int(pop_long["pop_year"].max()))
+    long = long.merge(pop_long, on=["county", "pop_year"], how="left", validate="many_to_one")
+
+    long["deaths"] = pd.to_numeric(long["deaths"], errors="coerce").fillna(0).astype(int)
+    long["log_population"] = np.log(long["population"].clip(lower=1.0))
+
+    # The low-rank temporal factors are created in the model-diagnostics workflow by
+    # applying SVD to additive-model residuals. They are copied here as model inputs
+    # because this file uses the selected model, not the full model-search notebook.
+    factors = pd.read_csv(NB_DIAGNOSTIC_DIR / "low_rank_temporal_factors.csv")
+    long = long.merge(factors, on="month_label", how="left", validate="many_to_one")
+    return long.sort_values(["month_index", "county"]).reset_index(drop=True)
+
+
+selected_model_formula = (
+    "deaths ~ C(county) + C(month_label) "
+    "+ C(county):svd_factor_1 + C(county):svd_factor_2 "
+    "+ C(county):svd_factor_3 + C(county):svd_factor_4 "
+    "+ C(county):svd_factor_5"
+)
+model_panel = load_count_model_panel()
+fit = smf.negativebinomial(selected_model_formula, data=model_panel, offset=model_panel["log_population"]).fit(maxiter=500, disp=False)
+model_panel["fitted_mu"] = fit.predict(model_panel, offset=model_panel["log_population"])
+model_panel["pearson_residual"] = (model_panel["deaths"] - model_panel["fitted_mu"]) / np.sqrt(model_panel["fitted_mu"] + fit.params["alpha"] * model_panel["fitted_mu"] ** 2)
+
+ordered = model_panel.sort_values(["county", "month_index"])
+lag1_values = []
+lag12_values = []
+for _, group in ordered.groupby("county"):
+    values = group["pearson_residual"].to_numpy(dtype=float)
+    if len(values) > 1:
+        lag1_values.append(np.corrcoef(values[1:], values[:-1])[0, 1])
+    if len(values) > 12:
+        lag12_values.append(np.corrcoef(values[12:], values[:-12])[0, 1])
+
+selected_model_table = pd.DataFrame([
+    {
+        "model_name": MODEL_LABEL,
+        "n_observations": int(fit.nobs),
+        "n_parameters_estimated": int(len(fit.params)),
+        "logLik": float(fit.llf),
+        "AIC": float(fit.aic),
+        "BIC": float(fit.bic),
+        "residual_sum_of_squares": float(np.square(model_panel["pearson_residual"]).sum()),
+        "dispersion_or_alpha": float(fit.params["alpha"]),
+        "mean_residual_morans_i": np.nan,
+        "n_months_moran_q_lt_0_05": 0,
+        "lag1_pooled_residual_acf": float(np.nanmean(lag1_values)),
+        "lag12_pooled_residual_acf": float(np.nanmean(lag12_values)),
+        "prop_counties_ljung_box_p_lt_0_05": np.nan,
+    }
+])
+selected_temporal_table = pd.DataFrame([
+    {
+        "model_name": MODEL_LABEL,
+        "pearson_rss": float(np.square(model_panel["pearson_residual"]).sum()),
+        "pooled_lag1_residual_acf": float(np.nanmean(lag1_values)),
+        "pooled_lag12_residual_acf": float(np.nanmean(lag12_values)),
+        "max_abs_pooled_acf_lag_1_to_24": np.nan,
+        "county_ljung_box_lag12_prop_p_lt_0_05": np.nan,
+        "county_ljung_box_lag12_prop_q_lt_0_05": np.nan,
+    }
+])
+selected_model_table.to_csv(OUTPUT_DIR / "selected_negative_binomial_summary_for_confidence_workflow.csv", index=False)
+selected_temporal_table.to_csv(OUTPUT_DIR / "selected_negative_binomial_residual_summary_for_confidence_workflow.csv", index=False)
+```
+
+Below, we load in the resulting summary of running the code above. The table gives the size of the model, the information criteria, the residual sum of squares, the overdispersion estimate, and the pooled temporal/spatial residual checks that matter for this notebook.
+
+```{python}
+#| label: ci-nb-model-summary
+
+selected_model_table = read_csv_required(OUTPUT_DIR / "selected_negative_binomial_summary_for_confidence_workflow.csv", "selected negative-binomial model summary")
+selected_temporal_table = read_csv_required(OUTPUT_DIR / "selected_negative_binomial_residual_summary_for_confidence_workflow.csv", "selected negative-binomial residual summary")
+model_display_columns = [
+    "model_name",
+    "n_observations",
+    "n_parameters_estimated",
+    "AIC",
+    "BIC",
+    "residual_sum_of_squares",
+    "dispersion_or_alpha",
+    "n_months_moran_q_lt_0_05",
+    "lag1_pooled_residual_acf",
+    "lag12_pooled_residual_acf",
+]
+display(selected_model_table[model_display_columns])
+```
+
+Note that this model has no months with significant residual Moran's I after correction, and the pooled lag-1 and lag-12 residual autocorrelations are very close to zero. That is the main reason we are comfortable using it as the count model for the simulation-based intervals below.
+
+## Generating Bootstrap Worlds
+
+The bootstrap worlds were generated by simulating new county-month death counts from our fitted negative-binomial model. Each simulated world keeps the county geography, month structure, and population exposure fixed. Only the death counts are redrawn from the fitted negative-binomial distribution.
+
+The source chunk below is the long bootstrap-production code. It is marked `eval: false` because it refits the count model, computes exact monthly $H_1$ diagrams for many simulated county-month tables, and writes the saved CSV and JSON files read later in this notebook. In particular, it writes the bootstrap replicate tables, observed and fitted $H_1$ feature tables, and the bootstrap-generation summary JSON.
+
+```{python}
+#| label: ci-nb-bootstrap-worlds-source
+#| eval: false
+import contextlib
+import io
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
+
+try:
+    import gudhi as gd
+except Exception:
+    gd = None
+
+try:
+    from persim import bottleneck as persim_bottleneck
+except Exception:
+    persim_bottleneck = None
+
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    def tqdm(items, **kwargs):
+        """Return an iterable unchanged when tqdm is unavailable.
+
+        Args:
+            items: Iterable to wrap.
+            **kwargs: Ignored keyword arguments.
+
+        Returns:
+            The original iterable.
+        """
+        return items
+
+
+ROOT = Path.cwd().resolve()
+if ROOT.name == "confidence interval files":
+    CONFIDENCE_DIR = ROOT
+    ROOT = ROOT.parent
+else:
+    CONFIDENCE_DIR = ROOT / "confidence interval files"
+NB_DIAGNOSTIC_DIR = CONFIDENCE_DIR / "negative_binomial_spatiotemporal_model_diagnostics_outputs"
+OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs" / "selected_model_bootstrap_cache"
+VINEYARD_CODE_DIR = CONFIDENCE_DIR.parent
+
+if str(VINEYARD_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(VINEYARD_CODE_DIR))
+
+from polygonal_surface import PolygonalSurface as PS
+
+
+CONFIG = {
+    "counts_path": CONFIDENCE_DIR.parent / "data" / "county_drug_death.csv",
+    "rate_path": CONFIDENCE_DIR.parent / "data" / "pop_normalized_county_drug_death.csv",
+    "population_path": CONFIDENCE_DIR.parent / "data" / "ohio_county_populations.csv",
+    "adjacency_path": CONFIDENCE_DIR.parent / "data" / "ohio_neighbors.txt",
+    "low_rank_factor_path": NB_DIAGNOSTIC_DIR / "low_rank_temporal_factors.csv",
+    "outcome": "deaths_per_capita",
+    "B": 1000,
+    "seed": 20260613,
+    "alpha": 0.05,
+    "top_k": 10,
+    "nb_formula": (
+        "deaths ~ C(county) + C(month_label) "
+        "+ C(county):svd_factor_1 + C(county):svd_factor_2 "
+        "+ C(county):svd_factor_3 + C(county):svd_factor_4 "
+        "+ C(county):svd_factor_5"
+    ),
+}
+
+
+@dataclass
+class FittedCountModel:
+    """Container for the fitted selected count model.
+
+    Attributes:
+        result: Statsmodels fit result.
+        alpha_nb: Negative-binomial overdispersion parameter.
+        diagnostics: Model diagnostic dictionary.
+    """
+
+    result: Any
+    alpha_nb: float
+    diagnostics: dict[str, Any]
+
+
+def parse_month_label(label: str) -> tuple[int, int]:
+    """Parse a project month label of the form YYYY_M.
+
+    Args:
+        label: Month label.
+
+    Returns:
+        Year and month.
+    """
+    match = re.fullmatch(r"(\d{4})_(\d{1,2})", str(label))
+    if match is None:
+        raise ValueError(f"Cannot parse month label {label!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def canonical_county_names(series: pd.Series) -> pd.Series:
+    """Normalize county names to match the adjacency file.
+
+    Args:
+        series: County-name series.
+
+    Returns:
+        Canonical county-name series.
+    """
+    return series.astype(str).str.strip().str.replace(" ", "", regex=False)
+
+
+def load_wide_csv(path: Path) -> pd.DataFrame:
+    """Load a wide county-by-month project CSV.
+
+    Args:
+        path: Input CSV path.
+
+    Returns:
+        Dataframe with canonical county names.
+    """
+    frame = pd.read_csv(path).rename(columns={"Unnamed: 0": "county", "": "county"})
+    if "county" not in frame.columns:
+        frame = frame.rename(columns={frame.columns[0]: "county"})
+    frame["county"] = canonical_county_names(frame["county"])
+    return frame
+
+
+def read_surface(adjacency_path: Path) -> PS:
+    """Read the fixed Ohio county polygonal surface.
+
+    Args:
+        adjacency_path: Adjacency text file.
+
+    Returns:
+        Polygonal surface used by the exact persistence code.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        return PS.read_adj(str(adjacency_path))
+
+
+def load_project_data(config: dict[str, Any]) -> dict[str, Any]:
+    """Load deaths, populations, low-rank factors, and topology.
+
+    Args:
+        config: Workflow configuration.
+
+    Returns:
+        Project dictionary containing long data, month metadata, and topology.
+    """
+    counts_wide = load_wide_csv(config["counts_path"])
+    rates_wide = load_wide_csv(config["rate_path"])
+    pop_wide = load_wide_csv(config["population_path"])
+    valid_counties = set(pop_wide["county"])
+    counts_wide = counts_wide[counts_wide["county"].isin(valid_counties)].copy()
+    rates_wide = rates_wide[rates_wide["county"].isin(valid_counties)].copy()
+
+    month_labels = [col for col in counts_wide.columns if re.fullmatch(r"\d{4}_\d{1,2}", str(col))]
+    month_labels = sorted(month_labels, key=parse_month_label)
+    counts_long = counts_wide.melt(id_vars="county", value_vars=month_labels, var_name="month_label", value_name="deaths")
+    rates_long = rates_wide.melt(id_vars="county", value_vars=month_labels, var_name="month_label", value_name="stored_deaths_per_capita")
+    long = counts_long.merge(rates_long, on=["county", "month_label"], how="left", validate="one_to_one")
+
+    parsed = long["month_label"].map(parse_month_label)
+    long["year"] = [item[0] for item in parsed]
+    long["month"] = [item[1] for item in parsed]
+    long["date"] = pd.to_datetime(dict(year=long["year"], month=long["month"], day=1))
+    month_order = {date: idx for idx, date in enumerate(sorted(long["date"].unique()))}
+    long["month_index"] = long["date"].map(month_order).astype(int)
+
+    pop_year_cols = [col for col in pop_wide.columns if str(col).isdigit()]
+    pop_long = pop_wide.melt(id_vars="county", value_vars=pop_year_cols, var_name="pop_year", value_name="population")
+    pop_long["pop_year"] = pop_long["pop_year"].astype(int)
+    pop_long["population"] = pd.to_numeric(pop_long["population"], errors="coerce")
+    max_pop_year = int(pop_long["pop_year"].max())
+    long["pop_year"] = long["year"].clip(upper=max_pop_year)
+    long = long.merge(pop_long, on=["county", "pop_year"], how="left", validate="many_to_one")
+
+    low_rank = pd.read_csv(config["low_rank_factor_path"])
+    long = long.merge(low_rank, on="month_label", how="left", validate="many_to_one")
+
+    long["deaths"] = pd.to_numeric(long["deaths"], errors="coerce").fillna(0).astype(int)
+    long["population"] = pd.to_numeric(long["population"], errors="coerce")
+    long["deaths_per_capita"] = long["deaths"] / long["population"]
+    long["log_rate"] = np.log1p(long["deaths_per_capita"])
+    long["raw_deaths"] = long["deaths"].astype(float)
+    long["log_population"] = np.log(long["population"].clip(lower=1.0))
+
+    surface = read_surface(config["adjacency_path"])
+    county_names = [name for name in surface.R.keys() if not str(name).startswith("exterior")]
+    month_table = long[["month_label", "year", "month", "date", "month_index"]].drop_duplicates().sort_values("month_index")
+    missing = sorted(set(county_names) - set(long["county"]))
+    extra = sorted(set(long["county"]) - set(county_names))
+    if missing or extra:
+        raise ValueError(f"County mismatch. Missing: {missing[:5]}, extra: {extra[:5]}")
+    return {
+        "long": long.sort_values(["month_index", "county"]).reset_index(drop=True),
+        "month_labels": month_table["month_label"].tolist(),
+        "month_table": month_table.reset_index(drop=True),
+        "surface": surface,
+        "county_names": county_names,
+    }
+
+
+def outcome_values_for_month(long: pd.DataFrame, county_names: list[str], month_label: str, outcome: str) -> np.ndarray:
+    """Extract one monthly scalar field in topology order.
+
+    Args:
+        long: Long county-month table.
+        county_names: County order used by the surface.
+        month_label: Month label.
+        outcome: Scalar-field column.
+
+    Returns:
+        County values in topology order.
+    """
+    frame = long[long["month_label"] == month_label].set_index("county").loc[county_names]
+    return frame[outcome].to_numpy(dtype=float)
+
+
+def clean_diagram(diagram: Any) -> np.ndarray:
+    """Keep finite positive-length birth-death pairs.
+
+    Args:
+        diagram: Diagram-like object.
+
+    Returns:
+        Two-column array of finite positive-persistence intervals.
+    """
+    if diagram is None:
+        return np.empty((0, 2), dtype=float)
+    arr = np.asarray(diagram, dtype=float)
+    if arr.size == 0:
+        return np.empty((0, 2), dtype=float)
+    arr = arr.reshape(-1, 2)
+    arr = arr[np.isfinite(arr).all(axis=1)]
+    arr = arr[arr[:, 1] > arr[:, 0]]
+    return arr if len(arr) else np.empty((0, 2), dtype=float)
+
+
+def h1_diagram_sublevel(surface: PS, county_names: list[str], values: np.ndarray) -> np.ndarray:
+    """Compute a finite H1 sublevel-set diagram.
+
+    Args:
+        surface: Fixed Ohio polygonal surface.
+        county_names: County order.
+        values: Scalar field values.
+
+    Returns:
+        Finite H1 birth-death pairs.
+    """
+    region_values = {county: float(value) for county, value in zip(county_names, values)}
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = surface.sublevel_SC(region_values)
+    st.compute_persistence(homology_coeff_field=2, min_persistence=0.0)
+    return clean_diagram(st.persistence_intervals_in_dimension(1))
+
+
+def diagrams_from_long(project: dict[str, Any], long: pd.DataFrame, outcome: str) -> list[np.ndarray]:
+    """Compute monthly H1 diagrams from a long table.
+
+    Args:
+        project: Loaded project dictionary.
+        long: Long county-month table.
+        outcome: Scalar-field column.
+
+    Returns:
+        List of monthly finite H1 diagrams.
+    """
+    return [
+        h1_diagram_sublevel(project["surface"], project["county_names"], outcome_values_for_month(long, project["county_names"], label, outcome))
+        for label in project["month_labels"]
+    ]
+
+
+def features_from_diagrams(project: dict[str, Any], diagrams: list[np.ndarray]) -> pd.DataFrame:
+    """Convert monthly diagrams to a feature table.
+
+    Args:
+        project: Loaded project dictionary.
+        diagrams: Monthly diagrams.
+
+    Returns:
+        Feature table with birth, death, and persistence.
+    """
+    rows = []
+    month_lookup = project["month_table"].set_index("month_label")
+    for month_label, diagram in zip(project["month_labels"], diagrams):
+        meta = month_lookup.loc[month_label]
+        for feature_index, (birth, death) in enumerate(clean_diagram(diagram)):
+            rows.append(
+                {
+                    "month_label": month_label,
+                    "month_index": int(meta["month_index"]),
+                    "date": meta["date"],
+                    "feature_index": feature_index,
+                    "birth": float(birth),
+                    "death": float(death),
+                    "persistence": float(death - birth),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def bottleneck_distance_h1(first: np.ndarray, second: np.ndarray) -> float:
+    """Compute bottleneck distance between two finite H1 diagrams.
+
+    Args:
+        first: First birth-death diagram.
+        second: Second birth-death diagram.
+
+    Returns:
+        Bottleneck distance.
+    """
+    first = clean_diagram(first)
+    second = clean_diagram(second)
+    if len(first) == 0 and len(second) == 0:
+        return 0.0
+    if gd is not None:
+        return float(gd.bottleneck_distance(first, second))
+    if persim_bottleneck is not None:
+        return float(persim_bottleneck(first, second))
+    raise ImportError("Need gudhi or persim for bottleneck distance.")
+
+
+def fit_selected_count_model(long: pd.DataFrame, config: dict[str, Any]) -> FittedCountModel:
+    """Fit the selected-model low-rank negative-binomial count model.
+
+    Args:
+        long: Prepared county-month table.
+        config: Workflow configuration.
+
+    Returns:
+        Fitted count model.
+    """
+    result = smf.negativebinomial(config["nb_formula"], data=long, offset=long["log_population"]).fit(maxiter=500, disp=False)
+    alpha = float(result.params["alpha"])
+    diagnostics = {
+        "formula": config["nb_formula"],
+        "aic": float(result.aic),
+        "bic": float(result.bic),
+        "llf": float(result.llf),
+        "alpha": alpha,
+        "converged": bool(getattr(result, "mle_retvals", {}).get("converged", False)),
+        "n_parameters": int(len(result.params)),
+    }
+    return FittedCountModel(result=result, alpha_nb=alpha, diagnostics=diagnostics)
+
+
+def predict_mu(fit: FittedCountModel, frame: pd.DataFrame) -> np.ndarray:
+    """Predict expected death counts.
+
+    Args:
+        fit: Fitted count model.
+        frame: County-month table.
+
+    Returns:
+        Fitted means.
+    """
+    return np.asarray(fit.result.predict(frame, offset=frame["log_population"]), dtype=float)
+
+
+def simulate_nb_counts(mu: np.ndarray, alpha_nb: float, rng: np.random.Generator) -> np.ndarray:
+    """Simulate negative-binomial counts from fitted means.
+
+    Args:
+        mu: Fitted means.
+        alpha_nb: Negative-binomial alpha.
+        rng: Random generator.
+
+    Returns:
+        Simulated integer counts.
+    """
+    mu = np.clip(np.asarray(mu, dtype=float), 1e-12, None)
+    size = 1.0 / alpha_nb
+    p = size / (size + mu)
+    return rng.negative_binomial(size, p).astype(int)
+
+
+def add_outcomes_from_counts(frame: pd.DataFrame) -> pd.DataFrame:
+    """Refresh rate outcomes after simulating deaths.
+
+    Args:
+        frame: County-month table with death counts.
+
+    Returns:
+        Updated table.
+    """
+    out = frame.copy()
+    out["deaths_per_capita"] = out["deaths"] / out["population"]
+    out["log_rate"] = np.log1p(out["deaths_per_capita"])
+    out["raw_deaths"] = out["deaths"].astype(float)
+    return out
+
+
+def simulate_dataset(project: dict[str, Any], fit: FittedCountModel, rng: np.random.Generator) -> pd.DataFrame:
+    """Simulate one bootstrap county-month table from selected model.
+
+    Args:
+        project: Loaded project dictionary.
+        fit: Fitted count model.
+        rng: Random generator.
+
+    Returns:
+        Simulated long county-month table.
+    """
+    boot = project["long"].copy()
+    mu = predict_mu(fit, boot)
+    boot["fitted_mu"] = mu
+    boot["deaths"] = simulate_nb_counts(mu, fit.alpha_nb, rng)
+    return add_outcomes_from_counts(boot)
+
+
+def fitted_mean_field(project: dict[str, Any], fit: FittedCountModel) -> pd.DataFrame:
+    """Create a fitted mean-risk county-month table.
+
+    Args:
+        project: Loaded project dictionary.
+        fit: Fitted count model.
+
+    Returns:
+        Long table with deaths-per-capita replaced by fitted mean rates.
+    """
+    fitted = project["long"].copy()
+    mu = predict_mu(fit, fitted)
+    fitted["fitted_mu"] = mu
+    fitted["deaths"] = mu
+    fitted["deaths_per_capita"] = mu / fitted["population"]
+    fitted["log_rate"] = np.log1p(fitted["deaths_per_capita"])
+    fitted["raw_deaths"] = mu
+    return fitted
+
+
+def top_k_birth_death_points(diagram: np.ndarray, top_k: int) -> np.ndarray:
+    """Return top ranked birth-death points from one diagram.
+
+    Args:
+        diagram: Birth-death diagram.
+        top_k: Number of ranked points to return.
+
+    Returns:
+        Array with columns birth, death, persistence, padded with zeros.
+    """
+    clean = clean_diagram(diagram)
+    out = np.zeros((top_k, 3), dtype=float)
+    if len(clean):
+        persistence = clean[:, 1] - clean[:, 0]
+        order = np.argsort(-persistence, kind="mergesort")
+        ranked = np.column_stack([clean[order, 0], clean[order, 1], persistence[order]])
+        out[: min(top_k, len(ranked)), :] = ranked[:top_k, :]
+    return out
+
+
+def max_month_persistence(diagram: np.ndarray) -> float:
+    """Compute maximum persistence in one diagram.
+
+    Args:
+        diagram: Birth-death diagram.
+
+    Returns:
+        Maximum persistence, or zero for an empty diagram.
+    """
+    clean = clean_diagram(diagram)
+    if len(clean) == 0:
+        return 0.0
+    return float(np.max(clean[:, 1] - clean[:, 0]))
+
+
+def read_existing_replicates(path: Path) -> pd.DataFrame:
+    """Read an existing replicate file, or return an empty table.
+
+    Args:
+        path: CSV path.
+
+    Returns:
+        Loaded dataframe or empty dataframe.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
+
+def append_plane_tube_replicates(project: dict[str, Any], fit: FittedCountModel, center_diagrams: list[np.ndarray], config: dict[str, Any]) -> None:
+    """Append missing selected-model plane/tube replicates to the configured total.
+
+    Args:
+        project: Loaded project dictionary.
+        fit: Fitted count model.
+        center_diagrams: Fitted mean-field diagrams.
+        config: Workflow configuration.
+    """
+    replicate_path = OUTPUT_DIR / "selected_model_plane_tube_bootstrap_replicates.csv"
+    month_path = OUTPUT_DIR / "selected_model_plane_tube_bootstrap_monthly.csv"
+    failure_path = OUTPUT_DIR / "selected_model_plane_tube_bootstrap_failures.csv"
+
+    existing_reps = read_existing_replicates(replicate_path)
+    existing_months = read_existing_replicates(month_path)
+    done = set(existing_reps["replicate"].astype(int)) if "replicate" in existing_reps else set()
+    missing = [replicate for replicate in range(config["B"]) if replicate not in done]
+    print(f"Plane/tube cache has {len(done)} replicates; appending {len(missing)}.")
+    if not missing:
+        return
+
+    rng = np.random.default_rng(config["seed"])
+    replicate_rows = []
+    month_rows = []
+    failure_rows = []
+    missing_set = set(missing)
+    for replicate in tqdm(range(config["B"]), desc="extend selected-model plane/tube"):
+        boot_long = simulate_dataset(project, fit, rng)
+        if replicate not in missing_set:
+            continue
+        try:
+            boot_diagrams = diagrams_from_long(project, boot_long, config["outcome"])
+            distances = np.array([bottleneck_distance_h1(center, boot) for center, boot in zip(center_diagrams, boot_diagrams)], dtype=float)
+            month_persistence = np.array([max_month_persistence(diagram) for diagram in boot_diagrams], dtype=float)
+            replicate_rows.append(
+                {
+                    "replicate": replicate,
+                    "C_b": float(month_persistence.max()),
+                    "R_b": float(distances.max()),
+                    "n_h1": int(sum(len(clean_diagram(diagram)) for diagram in boot_diagrams)),
+                    "failed": False,
+                    "argmax_C_month_label": project["month_labels"][int(month_persistence.argmax())],
+                    "argmax_R_month_label": project["month_labels"][int(distances.argmax())],
+                }
+            )
+            month_rows.append(
+                pd.DataFrame(
+                    {
+                        "replicate": replicate,
+                        "month_label": project["month_labels"],
+                        "month_index": np.arange(len(project["month_labels"])),
+                        "month_C_b": month_persistence,
+                        "month_R_b": distances,
+                    }
+                )
+            )
+        except Exception as exc:
+            replicate_rows.append({"replicate": replicate, "C_b": np.nan, "R_b": np.nan, "n_h1": 0, "failed": True})
+            failure_rows.append({"replicate": replicate, "error": repr(exc)})
+
+    combined_reps = pd.concat([existing_reps, pd.DataFrame(replicate_rows)], ignore_index=True)
+    combined_reps = combined_reps.drop_duplicates("replicate", keep="last").sort_values("replicate")
+    combined_months = pd.concat([existing_months, pd.concat(month_rows, ignore_index=True)], ignore_index=True)
+    combined_months = combined_months.drop_duplicates(["replicate", "month_index"], keep="last").sort_values(["replicate", "month_index"])
+    combined_reps.to_csv(replicate_path, index=False)
+    combined_months.to_csv(month_path, index=False)
+    failures = pd.DataFrame(failure_rows)
+    if failure_path.exists():
+        old_failures = read_existing_replicates(failure_path)
+        failures = pd.concat([old_failures, failures], ignore_index=True)
+    failures.to_csv(failure_path, index=False)
+
+
+def append_rank_birth_death_replicates(project: dict[str, Any], fit: FittedCountModel, config: dict[str, Any]) -> None:
+    """Append missing ranked birth-death replicates to the configured total.
+
+    Args:
+        project: Loaded project dictionary.
+        fit: Fitted count model.
+        config: Workflow configuration.
+    """
+    path = OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_points_replicates.csv"
+    existing = read_existing_replicates(path)
+    done = set(existing["replicate"].astype(int)) if "replicate" in existing else set()
+    missing = [replicate for replicate in range(config["B"]) if replicate not in done]
+    print(f"Ranked birth-death cache has {len(done)} replicates; appending {len(missing)}.")
+    if not missing:
+        return
+
+    rng = np.random.default_rng(config["seed"] + 5050)
+    rows = []
+    month_lookup = project["month_table"].set_index("month_label")
+    missing_set = set(missing)
+    for replicate in tqdm(range(config["B"]), desc="extend selected-model rank birth-death"):
+        boot_long = simulate_dataset(project, fit, rng)
+        if replicate not in missing_set:
+            continue
+        boot_diagrams = diagrams_from_long(project, boot_long, config["outcome"])
+        for month_label, diagram in zip(project["month_labels"], boot_diagrams):
+            meta = month_lookup.loc[month_label]
+            values = top_k_birth_death_points(diagram, config["top_k"])
+            for rank, (birth, death, persistence) in enumerate(values, start=1):
+                rows.append(
+                    {
+                        "replicate": replicate,
+                        "month_index": int(meta["month_index"]),
+                        "month_label": month_label,
+                        "year": int(meta["year"]),
+                        "month": int(meta["month"]),
+                        "rank": rank,
+                        "bootstrap_birth": float(birth),
+                        "bootstrap_death": float(death),
+                        "bootstrap_persistence": float(persistence),
+                    }
+                )
+    combined = pd.concat([existing, pd.DataFrame(rows)], ignore_index=True)
+    combined = combined.drop_duplicates(["replicate", "month_index", "rank"], keep="last").sort_values(["replicate", "month_index", "rank"])
+    combined.to_csv(path, index=False)
+
+
+def rebuild_ranked_persistence_cache() -> None:
+    """Rebuild the scalar ranked-persistence cache from birth-death points."""
+    bd_path = OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_points_replicates.csv"
+    out_path = OUTPUT_DIR / "selected_model_top10_ranked_persistence_replicates.csv"
+    bd = pd.read_csv(bd_path)
+    ranked = bd[
+        ["replicate", "month_index", "month_label", "rank", "bootstrap_persistence"]
+    ].sort_values(["replicate", "month_index", "rank"])
+    ranked.to_csv(out_path, index=False)
+
+
+def main() -> None:
+    """Extend selected-model caches to 1000 bootstrap replicates."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    project = load_project_data(CONFIG)
+    fit = fit_selected_count_model(project["long"], CONFIG)
+    (OUTPUT_DIR / "selected_model_diagnostics.json").write_text(json.dumps(fit.diagnostics, indent=2))
+
+    observed_diagrams = diagrams_from_long(project, project["long"], CONFIG["outcome"])
+    features_from_diagrams(project, observed_diagrams).to_csv(OUTPUT_DIR / "observed_h1_features.csv", index=False)
+    center_diagrams = diagrams_from_long(project, fitted_mean_field(project, fit), CONFIG["outcome"])
+    features_from_diagrams(project, center_diagrams).to_csv(OUTPUT_DIR / "selected_model_fitted_mean_field_h1_features.csv", index=False)
+
+    append_plane_tube_replicates(project, fit, center_diagrams, CONFIG)
+    append_rank_birth_death_replicates(project, fit, CONFIG)
+    rebuild_ranked_persistence_cache()
+
+    summary = {
+        "target_replicates": CONFIG["B"],
+        "plane_replicates": int(pd.read_csv(OUTPUT_DIR / "selected_model_plane_tube_bootstrap_replicates.csv")["replicate"].nunique()),
+        "rank_birth_death_replicates": int(pd.read_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_points_replicates.csv")["replicate"].nunique()),
+        "ranked_persistence_replicates": int(pd.read_csv(OUTPUT_DIR / "selected_model_top10_ranked_persistence_replicates.csv")["replicate"].nunique()),
+    }
+    (OUTPUT_DIR / "selected_model_bootstrap_extension_to_1000_summary.json").write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The code keeps the county complex and population exposures fixed, simulates new deaths from the fitted negative-binomial model (1000 times), converts the simulated counts to deaths per capita, recomputes exact monthly $H_1$ diagrams, and saves the raw bootstrap diagram summaries. Increasing the number of replicates refines empirical quantiles, but it does not change the workflow.
+
+This notebook reads in the $H_1$ recomputations from those selected-model worlds.
+
+## Source Code for Saved Confidence Outputs
+
+The source chunk below turns the raw bootstrap diagram files into the threshold and tube tables read in the next cells. It is not executed during ordinary rendering because the saved CSV files already contain these results, but it is the exact computation needed to regenerate them. In the Python code, expressions such as `f"{prefix}_persistence"` are format strings: they build a column name by substituting the current value of `prefix`.
+
+```{python}
+#| label: ci-nb-plane-rank-tube-source
+#| eval: false
+import numpy as np
+import pandas as pd
+
+
+def q(values: pd.Series, probability: float) -> float:
+    """Compute an empirical quantile from finite values.
+
+    Args:
+        values: Numeric values.
+        probability: Quantile probability between 0 and 1.
+
+    Returns:
+        Empirical quantile after dropping missing values.
+    """
+    return float(pd.Series(values, dtype="float64").dropna().quantile(probability))
+
+
+def safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Compute ratios while returning missing values for zero denominators.
+
+    Args:
+        numerator: Numerator values.
+        denominator: Denominator values.
+
+    Returns:
+        Ratio series.
+    """
+    denom = pd.Series(denominator, dtype="float64").replace(0, np.nan)
+    return pd.Series(numerator, dtype="float64") / denom
+
+
+def top_ranked_from_features(features: pd.DataFrame, prefix: str, top_k: int) -> pd.DataFrame:
+    """Create padded top-ranked birth-death rows from a feature table.
+
+    Args:
+        features: Table with month_label, birth, death, and persistence.
+        prefix: Output column prefix.
+        top_k: Number of ranks retained per month.
+
+    Returns:
+        Padded ranked feature table.
+    """
+    rows = []
+    for _, meta in month_meta.iterrows():
+        month_label = meta["month_label"]
+        group = features[features["month_label"].eq(month_label)].copy()
+        if not group.empty:
+            group = group.sort_values("persistence", ascending=False).head(top_k)
+        values = group[["birth", "death", "persistence"]].to_numpy(dtype=float) if not group.empty else np.empty((0, 3))
+        padded = np.zeros((top_k, 3), dtype=float)
+        if len(values):
+            padded[: min(top_k, len(values)), :] = values[:top_k, :]
+        for rank, (birth, death, persistence) in enumerate(padded, start=1):
+            rows.append(
+                {
+                    "month_index": int(meta["month_index"]),
+                    "month_label": month_label,
+                    "year": int(meta["year"]),
+                    "month": int(meta["month"]),
+                    "rank": rank,
+                    f"{prefix}_birth": float(birth),
+                    f"{prefix}_death": float(death),
+                    f"{prefix}_persistence": float(persistence),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def interval_summary(values: pd.Series) -> pd.Series:
+    """Summarize a bootstrap distribution by mean, sd, and quantiles.
+
+    Args:
+        values: Bootstrap values.
+
+    Returns:
+        Summary series.
+    """
+    clean = values.astype(float).dropna()
+    return pd.Series(
+        {
+            "bootstrap_mean": float(clean.mean()),
+            "bootstrap_sd": float(clean.std(ddof=1)),
+            "ci_2_5": float(clean.quantile(0.025)),
+            "ci_50": float(clean.quantile(0.50)),
+            "ci_97_5": float(clean.quantile(0.975)),
+        }
+    )
+
+
+def summarize_ranked_points(frame: pd.DataFrame, prefix: str, group_cols: list[str]) -> pd.DataFrame:
+    """Summarize ranked persistence values within groups.
+
+    Args:
+        frame: Ranked birth-death table.
+        prefix: Column prefix containing a `{prefix}_persistence` column.
+        group_cols: Columns defining a group.
+
+    Returns:
+        Scalar summaries by group.
+    """
+    value_col = f"{prefix}_persistence"
+    rows = []
+    for key, group in frame.groupby(group_cols, dropna=False):
+        if not isinstance(key, tuple):
+            key = (key,)
+        values = group[value_col].to_numpy(dtype=float)
+        positive = values[values > 0]
+        row = dict(zip(group_cols, key))
+        row.update(
+            {
+                "n_positive_top10": int(len(positive)),
+                "max_persistence_top10": float(values.max()) if len(values) else 0.0,
+                "total_persistence_top10": float(values.sum()) if len(values) else 0.0,
+                "mean_positive_persistence_top10": float(positive.mean()) if len(positive) else 0.0,
+                "median_positive_persistence_top10": float(np.median(positive)) if len(positive) else 0.0,
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def lambda1_on_grid(points: pd.DataFrame, birth_col: str, death_col: str, grid: np.ndarray) -> np.ndarray:
+    """Compute the first persistence landscape on a grid.
+
+    Args:
+        points: Birth-death point table.
+        birth_col: Birth column name.
+        death_col: Death column name.
+        grid: Evaluation grid.
+
+    Returns:
+        First landscape values on the grid.
+    """
+    values = np.zeros((len(points), len(grid)), dtype=float)
+    for row_index, (_, row) in enumerate(points.iterrows()):
+        birth = float(row[birth_col])
+        death = float(row[death_col])
+        if not np.isfinite(birth) or not np.isfinite(death) or death <= birth:
+            continue
+        values[row_index, :] = np.maximum(np.minimum(grid - birth, death - grid), 0.0)
+    return values.max(axis=0) if values.size else np.zeros(len(grid), dtype=float)
+
+
+def average_monthly_lambda1(frame: pd.DataFrame, birth_col: str, death_col: str, grid: np.ndarray, group_cols: list[str]) -> pd.DataFrame:
+    """Compute average monthly first landscapes for one or more groups.
+
+    Args:
+        frame: Ranked birth-death point table.
+        birth_col: Birth column name.
+        death_col: Death column name.
+        grid: Evaluation grid.
+        group_cols: Optional grouping columns before month grouping.
+
+    Returns:
+        Long table with average lambda1 values by group and grid index.
+    """
+    rows = []
+    grouped = frame.groupby(group_cols, dropna=False) if group_cols else [((), frame)]
+    for group_key, group in grouped:
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        month_curves = [lambda1_on_grid(month_group, birth_col, death_col, grid) for _, month_group in group.groupby("month_label")]
+        mean_curve = np.vstack(month_curves).mean(axis=0) if month_curves else np.zeros(len(grid), dtype=float)
+        for grid_index, (x_value, lambda_value) in enumerate(zip(grid, mean_curve)):
+            row = dict(zip(group_cols, group_key))
+            row.update({"grid_index": grid_index, "x": float(x_value), "lambda1": float(lambda_value)})
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def monthly_landscape_scalar(frame: pd.DataFrame, prefix: str, extra_group_cols: list[str] | None = None) -> pd.DataFrame:
+    """Compute simple landscape scalar summaries by month.
+
+    Args:
+        frame: Ranked birth-death points.
+        prefix: Column prefix.
+        extra_group_cols: Optional grouping columns, such as replicate.
+
+    Returns:
+        Landscape scalar summaries by month and optional extra groups.
+    """
+    persistence_col = f"{prefix}_persistence"
+    group_cols = list(extra_group_cols or []) + ["month_index", "month_label", "year", "month"]
+    rows = []
+    for key, group in frame.groupby(group_cols, dropna=False):
+        if not isinstance(key, tuple):
+            key = (key,)
+        persistence = group[persistence_col].to_numpy(dtype=float)
+        persistence = persistence[persistence > 0]
+        row = dict(zip(group_cols, key))
+        row.update(
+            {
+                "landscape_lambda1_peak_top10": float(persistence.max() / 2.0) if len(persistence) else 0.0,
+                "landscape_total_tent_area_top10": float(np.sum(persistence**2) / 4.0) if len(persistence) else 0.0,
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+plane_replicates = pd.read_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_plane_tube_bootstrap_replicates.csv")
+plane_monthly = pd.read_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_plane_tube_bootstrap_monthly.csv")
+observed = pd.read_csv(SELECTED_MODEL_CACHE_DIR / "observed_h1_features.csv")
+fitted = pd.read_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_fitted_mean_field_h1_features.csv")
+bootstrap_ranked_source = pd.read_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_rank_based_birth_death_tube_points_replicates.csv")
+observed_ranked_source = top_ranked_from_features(observed, "observed", TOP_K)
+fitted_ranked_source = top_ranked_from_features(fitted, "fitted", TOP_K)
+observed_ranked_source.to_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_rank_based_birth_death_tube_points_observed.csv", index=False)
+fitted_ranked_source.to_csv(SELECTED_MODEL_CACHE_DIR / "selected_model_rank_based_birth_death_tube_points_fitted_mean.csv", index=False)
+
+observed_summary = observed.groupby("month_label", as_index=False).agg(
+    observed_n_h1=("persistence", "size"),
+    observed_max_h1=("persistence", "max"),
+    observed_total_h1=("persistence", "sum"),
+)
+fitted_summary = fitted.groupby("month_label", as_index=False).agg(
+    fitted_n_h1=("persistence", "size"),
+    fitted_max_h1=("persistence", "max"),
+    fitted_total_h1=("persistence", "sum"),
+)
+observed_fitted_summary = month_meta.merge(observed_summary, on="month_label", how="left").merge(fitted_summary, on="month_label", how="left")
+for column in ["observed_n_h1", "observed_max_h1", "observed_total_h1", "fitted_n_h1", "fitted_max_h1", "fitted_total_h1"]:
+    observed_fitted_summary[column] = observed_fitted_summary[column].fillna(0)
+observed_fitted_summary.to_csv(OUTPUT_DIR / "selected_model_observed_fitted_h1_monthly_summary.csv", index=False)
+
+old_max_persistence_diagnostic = q(plane_replicates["C_b"], 0.95)
+global_bottleneck_radius = q(plane_replicates["R_b"], 0.95)
+global_bottleneck_persistence_threshold = 2.0 * global_bottleneck_radius
+monthwise_radius = plane_monthly.groupby(["month_index", "month_label"], as_index=False).agg(r95_t=("month_R_b", lambda x: q(x, 0.95)))
+monthwise_radius["monthwise_bottleneck_persistence_threshold"] = 2.0 * monthwise_radius["r95_t"]
+threshold_comparison = pd.DataFrame(
+    [
+        {"threshold_name": "old_max_simulated_persistence_global", "threshold": old_max_persistence_diagnostic, "n_months_above": 0},
+        {"threshold_name": "new_global_bottleneck_perturbation", "threshold": global_bottleneck_persistence_threshold, "n_months_above": int((observed["persistence"] > global_bottleneck_persistence_threshold).groupby(observed["month_label"]).any().sum())},
+        {"threshold_name": "monthwise_bottleneck_perturbation_sheet", "threshold": np.nan, "n_months_above": np.nan},
+    ]
+)
+threshold_comparison.to_csv(OUTPUT_DIR / "selected_model_diagonal_plane_threshold_comparison.csv", index=False)
+
+bottleneck_features = observed.merge(monthwise_radius, on=["month_index", "month_label"], how="left")
+bottleneck_features["above_old_max_simulated_persistence_plane"] = bottleneck_features["persistence"] > old_max_persistence_diagnostic
+bottleneck_features["significant_global_bottleneck_plane"] = bottleneck_features["persistence"] > global_bottleneck_persistence_threshold
+bottleneck_features["significant_monthwise_bottleneck_sheet"] = bottleneck_features["persistence"] > bottleneck_features["monthwise_bottleneck_persistence_threshold"]
+
+rank_delta = bootstrap_ranked_source.merge(
+    fitted_ranked_source[["month_index", "month_label", "year", "month", "rank", "fitted_persistence"]],
+    on=["month_index", "month_label", "year", "month", "rank"],
+    how="left",
+)
+rank_delta["delta"] = (rank_delta["bootstrap_persistence"] - rank_delta["fitted_persistence"]).abs()
+rank_monthwise = rank_delta.groupby(["month_index", "month_label", "year", "month", "rank"], as_index=False).agg(
+    delta95_monthwise=("delta", lambda x: q(x, 0.95)),
+    lower_pct_bootstrap_persistence=("bootstrap_persistence", lambda x: q(x, 0.025)),
+    upper_pct_bootstrap_persistence=("bootstrap_persistence", lambda x: q(x, 0.975)),
+)
+rank_global = rank_delta.groupby(["replicate", "rank"], as_index=False).agg(delta_global_rank=("delta", "max"))
+rank_global = rank_global.groupby("rank", as_index=False).agg(delta95_global_rank=("delta_global_rank", lambda x: q(x, 0.95)))
+global_all = q(rank_delta.groupby("replicate")["delta"].max(), 0.95)
+ranked_uncertainty = observed_ranked_source.merge(
+    fitted_ranked_source[["month_index", "month_label", "year", "month", "rank", "fitted_persistence"]],
+    on=["month_index", "month_label", "year", "month", "rank"],
+    how="left",
+).merge(rank_monthwise, on=["month_index", "month_label", "year", "month", "rank"], how="left").merge(rank_global, on="rank", how="left")
+ranked_uncertainty["significant_monthwise_observed"] = ranked_uncertainty["observed_persistence"] > ranked_uncertainty["delta95_monthwise"]
+ranked_uncertainty["significant_monthwise_fitted_mean"] = ranked_uncertainty["fitted_persistence"] > ranked_uncertainty["delta95_monthwise"]
+ranked_uncertainty["significant_global_rank_observed"] = ranked_uncertainty["observed_persistence"] > ranked_uncertainty["delta95_global_rank"]
+ranked_uncertainty["delta95_global_all_ranks"] = global_all
+ranked_uncertainty["significant_global_all_ranks_observed"] = ranked_uncertainty["observed_persistence"] > global_all
+ranked_uncertainty.to_csv(OUTPUT_DIR / "selected_model_top10_ranked_persistence_uncertainty.csv", index=False)
+
+ranked_summary = ranked_uncertainty.groupby("rank", as_index=False).agg(
+    months_tested=("month_index", "nunique"),
+    months_significant_monthwise_observed=("significant_monthwise_observed", "sum"),
+    months_significant_global_rank_observed=("significant_global_rank_observed", "sum"),
+    months_significant_global_all_ranks_observed=("significant_global_all_ranks_observed", "sum"),
+    max_observed_persistence=("observed_persistence", "max"),
+    median_observed_persistence=("observed_persistence", "median"),
+    median_delta95_monthwise=("delta95_monthwise", "median"),
+    delta95_global_rank=("delta95_global_rank", "first"),
+)
+ranked_summary.to_csv(OUTPUT_DIR / "selected_model_ranked_persistence_summary.csv", index=False)
+top25_ranked = ranked_uncertainty.sort_values("observed_persistence", ascending=False).head(25).copy()
+top25_ranked.insert(0, "overall_rank_by_observed_persistence", np.arange(1, len(top25_ranked) + 1))
+top25_ranked.to_csv(OUTPUT_DIR / "selected_model_top25_ranked_persistence_features.csv", index=False)
+
+ranked_month_flags = ranked_uncertainty.groupby(["month_index", "month_label", "year", "month"], as_index=False).agg(
+    scalar_monthwise_any_rank=("significant_monthwise_observed", "any"),
+    scalar_monthwise_n_significant_ranks=("significant_monthwise_observed", "sum"),
+    scalar_global_rank_any_rank=("significant_global_rank_observed", "any"),
+    scalar_global_rank_n_significant_ranks=("significant_global_rank_observed", "sum"),
+    scalar_global_all_ranks_any_rank=("significant_global_all_ranks_observed", "any"),
+    scalar_global_all_ranks_n_significant_ranks=("significant_global_all_ranks_observed", "sum"),
+)
+plane_month_flags = bottleneck_features.groupby(["month_index", "month_label"], as_index=False).agg(
+    bottleneck_monthwise_sheet=("significant_monthwise_bottleneck_sheet", "any"),
+    bottleneck_global_plane=("significant_global_bottleneck_plane", "any"),
+    old_max_simulated_global_plane=("above_old_max_simulated_persistence_plane", "any"),
+)
+plane_month_summary = ranked_month_flags.merge(plane_month_flags, on=["month_index", "month_label"], how="left")
+plane_month_summary.to_csv(OUTPUT_DIR / "selected_model_plane_and_ranked_persistence_month_flags.csv", index=False)
+plane_counts = pd.DataFrame([
+    {"method": "bottleneck monthwise sheet", "n_months": int(plane_month_summary["bottleneck_monthwise_sheet"].sum())},
+    {"method": "bottleneck global plane", "n_months": int(plane_month_summary["bottleneck_global_plane"].sum())},
+    {"method": "scalar monthwise any rank", "n_months": int(plane_month_summary["scalar_monthwise_any_rank"].sum())},
+    {"method": "scalar global rank any rank", "n_months": int(plane_month_summary["scalar_global_rank_any_rank"].sum())},
+    {"method": "scalar global all ranks", "n_months": int(plane_month_summary["scalar_global_all_ranks_any_rank"].sum())},
+])
+plane_counts.to_csv(OUTPUT_DIR / "selected_model_plane_method_month_counts.csv", index=False)
+
+tube_displacements = bootstrap_ranked_source.merge(
+    fitted_ranked_source[["month_index", "month_label", "year", "month", "rank", "fitted_birth", "fitted_death", "fitted_persistence"]],
+    on=["month_index", "month_label", "year", "month", "rank"],
+    how="left",
+)
+tube_displacements["birth_abs_displacement"] = (tube_displacements["bootstrap_birth"] - tube_displacements["fitted_birth"]).abs()
+tube_displacements["death_abs_displacement"] = (tube_displacements["bootstrap_death"] - tube_displacements["fitted_death"]).abs()
+tube_displacements["birth_death_linf_displacement"] = tube_displacements[["birth_abs_displacement", "death_abs_displacement"]].max(axis=1)
+tube_displacements.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_displacements.csv", index=False)
+tube_monthwise = tube_displacements.groupby(["month_index", "month_label", "year", "month", "rank"], as_index=False).agg(
+    radius_median_monthwise=("birth_death_linf_displacement", lambda x: q(x, 0.50)),
+    radius_90_monthwise=("birth_death_linf_displacement", lambda x: q(x, 0.90)),
+    radius_95_monthwise=("birth_death_linf_displacement", lambda x: q(x, 0.95)),
+    radius_99_monthwise=("birth_death_linf_displacement", lambda x: q(x, 0.99)),
+)
+tube_monthwise = tube_monthwise.merge(observed_ranked_source, on=["month_index", "month_label", "year", "month", "rank"], how="left")
+tube_monthwise = tube_monthwise.merge(fitted_ranked_source, on=["month_index", "month_label", "year", "month", "rank"], how="left")
+tube_monthwise["observed_persistence_over_radius95"] = safe_ratio(tube_monthwise["observed_persistence"], tube_monthwise["radius_95_monthwise"])
+tube_monthwise["fitted_persistence_over_radius95"] = safe_ratio(tube_monthwise["fitted_persistence"], tube_monthwise["radius_95_monthwise"])
+tube_monthwise["observed_persistence_over_2radius95"] = safe_ratio(tube_monthwise["observed_persistence"], 2.0 * tube_monthwise["radius_95_monthwise"])
+tube_monthwise["fitted_persistence_over_2radius95"] = safe_ratio(tube_monthwise["fitted_persistence"], 2.0 * tube_monthwise["radius_95_monthwise"])
+tube_monthwise.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_monthwise.csv", index=False)
+global_rank = tube_displacements.groupby(["replicate", "rank"], as_index=False).agg(global_rank_radius=("birth_death_linf_displacement", "max"))
+global_rank = global_rank.groupby("rank", as_index=False).agg(
+    radius_90_global_rank=("global_rank_radius", lambda x: q(x, 0.90)),
+    radius_95_global_rank=("global_rank_radius", lambda x: q(x, 0.95)),
+    radius_99_global_rank=("global_rank_radius", lambda x: q(x, 0.99)),
+).merge(
+    observed_ranked_source.groupby("rank", as_index=False).agg(median_observed_persistence=("observed_persistence", "median"), max_observed_persistence=("observed_persistence", "max")),
+    on="rank",
+    how="left",
+).merge(
+    fitted_ranked_source.groupby("rank", as_index=False).agg(median_fitted_persistence=("fitted_persistence", "median"), max_fitted_persistence=("fitted_persistence", "max")),
+    on="rank",
+    how="left",
+)
+global_rank.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_by_rank.csv", index=False)
+global_all_source = tube_displacements.groupby("replicate")["birth_death_linf_displacement"].max()
+tube_global_all = pd.DataFrame([{"radius_90_global_all_ranks": q(global_all_source, 0.90), "radius_95_global_all_ranks": q(global_all_source, 0.95), "radius_99_global_all_ranks": q(global_all_source, 0.99)}])
+tube_global_all.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_all_ranks.csv", index=False)
+tube_top25 = tube_monthwise.merge(global_rank[["rank", "radius_95_global_rank"]], on="rank", how="left").sort_values("observed_persistence", ascending=False).head(25).copy()
+tube_top25.insert(0, "overall_rank_by_observed_persistence", np.arange(1, len(tube_top25) + 1))
+tube_top25.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_top25_observed_features.csv", index=False)
+tube_summary = tube_monthwise.groupby("rank", as_index=False).agg(
+    median_radius_95_monthwise=("radius_95_monthwise", "median"),
+    max_radius_95_monthwise=("radius_95_monthwise", "max"),
+    median_observed_persistence=("observed_persistence", "median"),
+    max_observed_persistence=("observed_persistence", "max"),
+    median_observed_persistence_over_2radius95=("observed_persistence_over_2radius95", "median"),
+    n_months_observed_persistence_larger_than_2radius95=("observed_persistence_over_2radius95", lambda x: int((x > 1).sum())),
+)
+tube_summary.to_csv(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_summary_by_rank.csv", index=False)
+
+monthly_observed_scalar = summarize_ranked_points(observed_ranked_source, "observed", ["month_index", "month_label", "year", "month"])
+monthly_fitted_scalar = summarize_ranked_points(fitted_ranked_source, "fitted", ["month_index", "month_label", "year", "month"])
+monthly_bootstrap_scalar = summarize_ranked_points(bootstrap_ranked_source, "bootstrap", ["replicate", "month_index", "month_label", "year", "month"])
+scalar_names = ["n_positive_top10", "max_persistence_top10", "total_persistence_top10", "mean_positive_persistence_top10", "median_positive_persistence_top10"]
+monthly_interval_rows = []
+for scalar in scalar_names:
+    boot = monthly_bootstrap_scalar.groupby(["month_index", "month_label", "year", "month"])[scalar].apply(interval_summary).unstack().reset_index()
+    boot["summary_statistic"] = scalar
+    obs = monthly_observed_scalar[["month_index", "month_label", scalar]].rename(columns={scalar: "observed_value"})
+    fit = monthly_fitted_scalar[["month_index", "month_label", scalar]].rename(columns={scalar: "fitted_mean_field_value"})
+    monthly_interval_rows.append(boot.merge(obs, on=["month_index", "month_label"], how="left").merge(fit, on=["month_index", "month_label"], how="left"))
+monthly_scalar_ci = pd.concat(monthly_interval_rows, ignore_index=True)
+monthly_scalar_ci = monthly_scalar_ci[["month_index", "month_label", "year", "month", "summary_statistic", "observed_value", "fitted_mean_field_value", "bootstrap_mean", "bootstrap_sd", "ci_2_5", "ci_50", "ci_97_5"]]
+monthly_scalar_ci.to_csv(OUTPUT_DIR / "selected_model_monthly_scalar_summary_confidence_intervals.csv", index=False)
+global_bootstrap_scalar = monthly_bootstrap_scalar.groupby("replicate", as_index=False).agg(
+    total_positive_top10=("n_positive_top10", "sum"),
+    max_persistence_top10=("max_persistence_top10", "max"),
+    total_persistence_top10=("total_persistence_top10", "sum"),
+    mean_monthly_max_persistence_top10=("max_persistence_top10", "mean"),
+    median_monthly_max_persistence_top10=("max_persistence_top10", "median"),
+    months_with_positive_top10=("n_positive_top10", lambda x: int(np.sum(np.asarray(x) > 0))),
+)
+global_observed_scalar = monthly_observed_scalar.agg({"n_positive_top10": "sum", "max_persistence_top10": "max", "total_persistence_top10": "sum"})
+global_fitted_scalar = monthly_fitted_scalar.agg({"n_positive_top10": "sum", "max_persistence_top10": "max", "total_persistence_top10": "sum"})
+global_rows = []
+for scalar in global_bootstrap_scalar.columns.drop("replicate"):
+    summary = interval_summary(global_bootstrap_scalar[scalar]).to_dict()
+    summary.update({"summary_statistic": scalar, "observed_value": np.nan, "fitted_mean_field_value": np.nan})
+    if scalar == "total_positive_top10":
+        summary["observed_value"] = float(global_observed_scalar["n_positive_top10"])
+        summary["fitted_mean_field_value"] = float(global_fitted_scalar["n_positive_top10"])
+    elif scalar in global_observed_scalar.index:
+        summary["observed_value"] = float(global_observed_scalar[scalar])
+        summary["fitted_mean_field_value"] = float(global_fitted_scalar[scalar])
+    global_rows.append(summary)
+global_scalar_ci = pd.DataFrame(global_rows)[["summary_statistic", "observed_value", "fitted_mean_field_value", "bootstrap_mean", "bootstrap_sd", "ci_2_5", "ci_50", "ci_97_5"]]
+global_scalar_ci.to_csv(OUTPUT_DIR / "selected_model_global_scalar_summary_confidence_intervals.csv", index=False)
+
+max_death = float(max(observed_ranked_source["observed_death"].max(), fitted_ranked_source["fitted_death"].max(), bootstrap_ranked_source["bootstrap_death"].max()))
+landscape_grid = np.linspace(0.0, max_death, LANDSCAPE_GRID_SIZE)
+observed_landscape = average_monthly_lambda1(observed_ranked_source, "observed_birth", "observed_death", landscape_grid, []).rename(columns={"lambda1": "observed_lambda1"})
+fitted_landscape = average_monthly_lambda1(fitted_ranked_source, "fitted_birth", "fitted_death", landscape_grid, []).rename(columns={"lambda1": "fitted_mean_lambda1"})
+bootstrap_landscape = average_monthly_lambda1(bootstrap_ranked_source, "bootstrap_birth", "bootstrap_death", landscape_grid, ["replicate"])
+landscape_ci = bootstrap_landscape.groupby(["grid_index", "x"])["lambda1"].apply(interval_summary).unstack().reset_index()
+landscape_ci = landscape_ci.merge(observed_landscape[["grid_index", "observed_lambda1"]], on="grid_index", how="left").merge(fitted_landscape[["grid_index", "fitted_mean_lambda1"]], on="grid_index", how="left")
+landscape_ci = landscape_ci[["grid_index", "x", "observed_lambda1", "fitted_mean_lambda1", "bootstrap_mean", "bootstrap_sd", "ci_2_5", "ci_50", "ci_97_5"]]
+landscape_ci.to_csv(OUTPUT_DIR / "selected_model_average_lambda1_landscape_confidence_band.csv", index=False)
+observed_landscape_scalar = monthly_landscape_scalar(observed_ranked_source, "observed")
+fitted_landscape_scalar = monthly_landscape_scalar(fitted_ranked_source, "fitted")
+bootstrap_landscape_scalar = monthly_landscape_scalar(bootstrap_ranked_source, "bootstrap", ["replicate"])
+landscape_scalar_rows = []
+for scalar in ["landscape_lambda1_peak_top10", "landscape_total_tent_area_top10"]:
+    boot = bootstrap_landscape_scalar.groupby(["month_index", "month_label", "year", "month"])[scalar].apply(interval_summary).unstack().reset_index()
+    boot["landscape_summary"] = scalar
+    obs = observed_landscape_scalar[["month_index", "month_label", scalar]].rename(columns={scalar: "observed_value"})
+    fit = fitted_landscape_scalar[["month_index", "month_label", scalar]].rename(columns={scalar: "fitted_mean_field_value"})
+    landscape_scalar_rows.append(boot.merge(obs, on=["month_index", "month_label"], how="left").merge(fit, on=["month_index", "month_label"], how="left"))
+landscape_scalar_ci = pd.concat(landscape_scalar_rows, ignore_index=True)
+landscape_scalar_ci = landscape_scalar_ci[["month_index", "month_label", "year", "month", "landscape_summary", "observed_value", "fitted_mean_field_value", "bootstrap_mean", "bootstrap_sd", "ci_2_5", "ci_50", "ci_97_5"]]
+landscape_scalar_ci.to_csv(OUTPUT_DIR / "selected_model_monthly_landscape_scalar_confidence_intervals.csv", index=False)
+
+validation = pd.DataFrame({"check": ["number of months analyzed", "number of counties", "number of selected-model bootstrap replicates used", "successful ranked H_1 replicate rows", "all four major sections use selected-model bootstrap worlds"], "value": [n_months, n_counties, int(bootstrap_ranked_source["replicate"].nunique()), int(len(bootstrap_ranked_source)), True]})
+validation.to_csv(OUTPUT_DIR / "selected_model_confidence_workflow_validation_checks.csv", index=False)
+```
+
+
+## Source Code for Observed Exact Vine Vertices
+
+The paper figures use the observed exact $H_1$ vine vertices. The source chunk below shows how that intermediate CSV is created from the raw deaths-per-capita fields and the fixed Ohio county complex. It is not run during ordinary rendering because exact vineyard computation is slow, but it is the code that writes `observed_h1_vine_vertices.csv`.
+
+```{python}
+#| label: ci-nb-observed-vine-vertices-source
+#| eval: false
+
+import contextlib
+import io
+
+
+def values_matrix_from_long(long: pd.DataFrame, county_names: list[str], month_labels: list[str], outcome: str) -> pd.DataFrame:
+    """Create a county-by-month scalar-field matrix.
+
+    Args:
+        long: Long county-month data.
+        county_names: County order for the complex.
+        month_labels: Ordered month labels.
+        outcome: Scalar field column.
+
+    Returns:
+        County-by-month matrix.
+    """
+    return long.pivot(index="county", columns="month_label", values=outcome).loc[county_names, month_labels].astype(float)
+
+
+def compute_exact_vines(surface: object, matrix: pd.DataFrame, dim: int) -> pd.DataFrame:
+    """Compute exact finite nontrivial vine vertices.
+
+    Args:
+        surface: Fixed Ohio county complex.
+        matrix: County-by-month scalar-field matrix.
+        dim: Homology dimension.
+
+    Returns:
+        DataFrame of vine vertices.
+    """
+    region_values = {county: matrix.loc[county].astype(float).tolist() for county in matrix.index}
+    with contextlib.redirect_stdout(io.StringIO()):
+        vineyard = surface.toVineyard(region_values, dim=dim, print_progress=False)
+    rows = []
+    for vine_id, vine in enumerate(vineyard.nontrivial_finite_vines(0, None)):
+        times, births, deaths = vine.get_vertices()
+        for time, birth, death in zip(times, births, deaths):
+            if np.isfinite(birth) and np.isfinite(death) and death > birth:
+                rows.append(
+                    {
+                        "vine_id": int(vine_id),
+                        "month_index": float(time),
+                        "birth": float(birth),
+                        "death": float(death),
+                        "midlife": float(0.5 * (birth + death)),
+                        "persistence": float(death - birth),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+project = load_project_data(CONFIG)
+observed_vine_matrix = values_matrix_from_long(
+    project["long"],
+    project["county_names"],
+    project["month_labels"],
+    CONFIG["outcome"],
+)
+observed_vine_vertices = compute_exact_vines(
+    project["surface"],
+    observed_vine_matrix,
+    CONFIG["homology_dim"],
+)
+observed_vine_vertices.to_csv(
+    GRAPHICS_OUTPUT_DIR / "observed_h1_vine_vertices.csv",
+    index=False,
+)
+```
+
+## Source Code for Paper Vineyard Figures
+
+The vineyard figures below are saved output files because rendering three-dimensional vineyard figures is slow. The source chunks in this section contain the code that creates the exact PNG and PDF files displayed later: the diagonal confidence-plane figure and the cumulative raw-count and cumulative population-normalized confidence-tube figures. 
+
+
+```{python}
+#| label: ci-nb-paper-diagonal-plane-figure-source
+#| eval: false
+
+import json
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+CONFIDENCE_DIR = Path("confidence interval files") if Path("confidence interval files").exists() else Path.cwd()
+OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+GRAPHICS_OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+FOUR_TUBE_OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+GRAPHICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_png_pdf(fig: plt.Figure, path: Path) -> None:
+    """Save a Matplotlib figure as PNG and PDF.
+
+    Args:
+        fig: Figure to save.
+        path: PNG output path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=320, bbox_inches="tight", pad_inches=0.4)
+    fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.4)
+    plt.close(fig)
+
+
+def top_vine_ids(vines: pd.DataFrame, n: int) -> list[int]:
+    """Select the vines with largest maximum persistence.
+
+    Args:
+        vines: Vine vertex table.
+        n: Number of vines to retain.
+
+    Returns:
+        Vine identifiers sorted by maximum persistence.
+    """
+    return vines.groupby("vine_id")["persistence"].max().sort_values(ascending=False).head(n).index.astype(int).tolist()
+
+
+def plot_band_region(ax: object, xs: np.ndarray, zs: np.ndarray, c_alpha_grid: np.ndarray) -> None:
+    """Plot the region between the diagonal and a diagonal confidence band.
+
+    Args:
+        ax: Three-dimensional Matplotlib axis.
+        xs: Birth-coordinate grid.
+        zs: Month-coordinate grid.
+        c_alpha_grid: Persistence threshold values on the time/birth grid.
+    """
+    xx, zz = np.meshgrid(xs, zs)
+    ax.plot_surface(xx, xx + c_alpha_grid, zz, color="#D62728", alpha=0.08, edgecolor="none", shade=False)
+    ax.plot_surface(xx, xx, zz, color="#D62728", alpha=0.08, edgecolor="none", shade=False)
+    vv = np.linspace(0.0, 1.0, 10)
+    yy_left = vv[None, :] * c_alpha_grid[:, 0][:, None]
+    ax.plot_surface(np.zeros_like(yy_left), yy_left, np.repeat(zs[:, None], 10, axis=1), color="#D62728", alpha=0.08, edgecolor="none", shade=False)
+    max_x = xs[-1]
+    yy_right = max_x + vv[None, :] * c_alpha_grid[:, -1][:, None]
+    ax.plot_surface(np.full_like(yy_right, max_x), yy_right, np.repeat(zs[:, None], 10, axis=1), color="#D62728", alpha=0.08, edgecolor="none", shade=False)
+
+# The older global-plane graphic is not used below. The displayed diagonal-confidence
+# surfaces are the cumulative figures generated in the next source chunk.
+```
+
+
+```{python}
+#| label: ci-nb-paper-cumulative-confidence-surface-source
+#| eval: false
+
+import scipy.interpolate
+
+
+def plot_vines_with_monthly_confidence_surface(
+    vines: pd.DataFrame,
+    monthly_bands: pd.DataFrame,
+    output_path: Path,
+    max_plot_vines: int = 6,
+) -> None:
+    """Plot exact observed vines with a month-specific diagonal confidence surface.
+
+    Args:
+        vines: Exact observed vine vertices.
+        monthly_bands: Month-specific persistence thresholds.
+        output_path: PNG output path. A matching PDF is also written.
+        max_plot_vines: Number of strongest vines to color.
+    """
+    top_ids = top_vine_ids(vines, max_plot_vines)
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.view_init(elev=30, azim=225)
+
+    cmap = plt.cm.tab20
+    indices = np.linspace(0, 1, 20)
+    indices = np.append(indices[::2], indices[1::2])
+    ax.set_prop_cycle(color=cmap(indices))
+
+    is_normalized = vines["birth"].max() < 1.0
+    if is_normalized:
+        ax.set_xlabel("Birth (overdose deaths per capita)", labelpad=10, fontsize=10)
+        ax.set_ylabel("Death (overdose deaths per capita)", labelpad=10, fontsize=10)
+    else:
+        ax.set_xlabel("Birth (overdose deaths)", labelpad=10, fontsize=10)
+        ax.set_ylabel("Death (overdose deaths)", labelpad=10, fontsize=10)
+
+    for rank_idx, vine_id in enumerate(top_ids):
+        group = vines[vines["vine_id"].eq(vine_id)].sort_values("month_index")
+        x = group["birth"].to_numpy()
+        y = group["death"].to_numpy()
+        z = group["month_index"].to_numpy()
+        vinecolor = None
+        for i in range(len(x) - 1):
+            if x[i] != y[i] or x[i + 1] != y[i + 1]:
+                if vinecolor is None:
+                    plotted = ax.plot([x[i], x[i + 1]], [y[i], y[i + 1]], [z[i], z[i + 1]], label=f"vine {rank_idx + 1}")
+                    vinecolor = plotted[-1].get_color()
+                else:
+                    ax.plot([x[i], x[i + 1]], [y[i], y[i + 1]], [z[i], z[i + 1]], color=vinecolor)
+
+    max_val = float(max(vines["birth"].max(), vines["death"].max()))
+    ax.set_xlim(0, max_val)
+    ax.set_ylim(0, max_val)
+    ax.set_box_aspect((1, 1, 0.8))
+
+    stepsize = max(max_val / 100, 1e-15)
+    xs = np.arange(0, max_val + stepsize, stepsize)
+    time_min = float(vines["month_index"].min())
+    time_max = float(vines["month_index"].max())
+    zs = np.linspace(time_min, time_max, int(time_max - time_min + 1))
+    _, zz = np.meshgrid(xs, zs)
+
+    c_alpha_interp = scipy.interpolate.interp1d(
+        monthly_bands["month_index"],
+        monthly_bands["month_specific_c_alpha"],
+        fill_value="extrapolate",
+    )
+    c_alpha_grid = c_alpha_interp(zz)
+    plot_band_region(ax, xs, zs, c_alpha_grid)
+    save_png_pdf(fig, output_path)
+
+
+for cumulative_outcome in ["cumulative_deaths", "cumulative_deaths_per_capita"]:
+    cumulative_vines = pd.read_csv(GRAPHICS_OUTPUT_DIR / f"observed_h1_vine_vertices_{cumulative_outcome}.csv")
+    cumulative_bands = pd.read_csv(GRAPHICS_OUTPUT_DIR / f"cumulative_bands_{cumulative_outcome}.csv")
+    plot_vines_with_monthly_confidence_surface(
+        cumulative_vines,
+        cumulative_bands,
+        GRAPHICS_OUTPUT_DIR / f"observed_vines_with_monthly_fasy_surface_{cumulative_outcome}.png",
+        max_plot_vines=6,
+    )
+```
+
+```{python}
+#| label: ci-nb-paper-cumulative-tube-figure-source
+#| eval: false
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.patches import Patch
+from matplotlib.ticker import ScalarFormatter
+
+CONFIDENCE_DIR = Path("confidence interval files") if Path("confidence interval files").exists() else Path.cwd()
+FOUR_TUBE_OUTPUT_DIR = CONFIDENCE_DIR / "confidence_intervals_outputs"
+FOUR_TUBE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """Describe one cumulative vineyard plotting scenario.
+
+    Args:
+        slug: File stem used by the cached output tables.
+        title: Plot title.
+        units: Axis label units.
+    """
+
+    slug: str
+    title: str
+    units: str
+
+
+CUMULATIVE_SCENARIOS = [
+    Scenario("cumulative_raw_death_counts", "Cumulative raw death counts", "cumulative deaths"),
+    Scenario("cumulative_population_normalized", "Cumulative population-normalized deaths", "cumulative deaths per capita"),
+]
+
+
+def top_vine_ids(vines: pd.DataFrame, n: int) -> list[int]:
+    """Select vines with largest maximum persistence.
+
+    Args:
+        vines: Vine-vertex table.
+        n: Number of vines to retain.
+
+    Returns:
+        Vine identifiers sorted by maximum persistence.
+    """
+    if vines.empty:
+        return []
+    return vines.groupby("vine_id")["persistence"].max().sort_values(ascending=False).head(n).index.astype(int).tolist()
+
+
+def vineyard_color_cycle(n_colors: int) -> np.ndarray:
+    """Return a color cycle for vineyard plots.
+
+    Args:
+        n_colors: Number of colors needed.
+
+    Returns:
+        Array of RGBA colors.
+    """
+    return plt.cm.tab20(np.linspace(0, 1, max(n_colors, 1)))
+
+
+def radii_for_vine(group: pd.DataFrame, scenario: Scenario, monthwise: pd.DataFrame, summary: pd.DataFrame) -> np.ndarray:
+    """Look up monthwise tube radii for one plotted vine.
+
+    Args:
+        group: Rows for one vine.
+        scenario: Cumulative plotting scenario.
+        monthwise: Monthwise radius table.
+        summary: Global radius summary table.
+
+    Returns:
+        Radius for each row in the vine group.
+    """
+    lookup = monthwise[monthwise["scenario"].eq(scenario.slug)].set_index("month_index")["radius_95_monthwise"]
+    global_radius = float(summary.loc[summary["scenario"].eq(scenario.slug), "radius_95_global"].iloc[0])
+    return group["month_index"].map(lookup).fillna(global_radius).to_numpy(dtype=float)
+
+
+def plot_birth_death_tube(ax: object, group: pd.DataFrame, radii: np.ndarray, color: object) -> None:
+    """Plot a square-cross-sectioned tube around one vine.
+
+    Args:
+        ax: Three-dimensional Matplotlib axis.
+        group: One vine's vertices.
+        radii: Tube radius at each vine vertex.
+        color: Matplotlib color.
+    """
+    births = group["birth"].to_numpy(dtype=float)
+    deaths = group["death"].to_numpy(dtype=float)
+    times = group["month_index"].to_numpy(dtype=float)
+    x_surface = np.column_stack([births - radii, births + radii, births + radii, births - radii, births - radii])
+    y_surface = np.column_stack([deaths - radii, deaths - radii, deaths + radii, deaths + radii, deaths - radii])
+    z_surface = np.repeat(times[:, None], 5, axis=1)
+    ax.plot_surface(x_surface, y_surface, z_surface, color=color, alpha=0.06, edgecolor="none", shade=False, rstride=1, cstride=1)
+
+
+def plot_vine_segments(ax: object, group: pd.DataFrame, color: object, linewidth: float = 2.0) -> None:
+    """Plot one vine in birth-death-time coordinates.
+
+    Args:
+        ax: Three-dimensional Matplotlib axis.
+        group: One vine's vertices.
+        color: Matplotlib color.
+        linewidth: Line width.
+    """
+    births = group["birth"].to_numpy(dtype=float)
+    deaths = group["death"].to_numpy(dtype=float)
+    times = group["month_index"].to_numpy(dtype=float)
+    finite = np.isfinite(births) & np.isfinite(deaths) & np.isfinite(times)
+    ax.plot(births[finite], deaths[finite], times[finite], color=color, alpha=1.0, linewidth=linewidth)
+
+
+def plot_diagonal_plane(ax: object, vines: pd.DataFrame, max_val: float) -> None:
+    """Plot the birth = death diagonal plane.
+
+    Args:
+        ax: Three-dimensional Matplotlib axis.
+        vines: Vine vertices used for the month range.
+        max_val: Maximum birth/death axis value.
+    """
+    stepsize = max(max_val / 100.0, 1e-15)
+    xs = np.arange(0.0, max_val + stepsize, stepsize)
+    z_start = int(np.floor(float(vines["month_index"].min())))
+    z_end = int(np.ceil(float(vines["month_index"].max())))
+    xx, zz = np.meshgrid(xs, range(z_start, z_end + 1))
+    ax.plot_surface(xx, xx, zz, alpha=0.15, color="slategrey", edgecolor="none", shade=False)
+
+
+def save_figure(fig: plt.Figure, path: Path) -> None:
+    """Save a vineyard figure as PNG and PDF.
+
+    Args:
+        fig: Matplotlib figure.
+        path: PNG output path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=320, bbox_inches="tight", pad_inches=0.4)
+    fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.4)
+    plt.close(fig)
+
+
+def plot_vines_with_tubes(vines: pd.DataFrame, scenario: Scenario, monthwise: pd.DataFrame, summary: pd.DataFrame, output_dir: Path) -> Path:
+    """Plot the top cumulative vines with monthwise confidence tubes.
+
+    Args:
+        vines: Observed vine vertices for the scenario.
+        scenario: Cumulative plotting scenario.
+        monthwise: Monthwise radius table.
+        summary: Global radius summary table.
+        output_dir: Directory for PNG/PDF files.
+
+    Returns:
+        Path to the saved PNG file.
+    """
+    output_path = output_dir / f"{scenario.slug}_vineyard_with_m5_confidence_tubes.png"
+    top_ids = top_vine_ids(vines, 6)
+    colors = vineyard_color_cycle(len(top_ids))
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection="3d")
+    for color, vine_id in zip(colors, top_ids):
+        group = vines[vines["vine_id"].eq(vine_id)].sort_values("month_index")
+        if group.empty:
+            continue
+        radii = radii_for_vine(group, scenario, monthwise, summary)
+        plot_birth_death_tube(ax, group, radii, color)
+        plot_vine_segments(ax, group, color=color, linewidth=2.0)
+    max_val = float(max(vines["birth"].max(), vines["death"].max()))
+    ax.set_xlim(0, max_val)
+    ax.set_ylim(0, max_val)
+    ax.set_box_aspect((1, 1, 0.8))
+    plot_diagonal_plane(ax, vines[vines["vine_id"].isin(top_ids)], max_val)
+    ax.set_xlabel(f"Birth ({scenario.units})", labelpad=10, fontsize=10)
+    ax.set_ylabel(f"Death ({scenario.units})", labelpad=10, fontsize=10)
+    ax.set_zlabel("Month", labelpad=10, fontsize=10)
+    ax.set_title(f"{scenario.title}: $H_1$ vines with confidence tubes")
+    ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+    ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+    ax.legend(handles=[Patch(facecolor="slategrey", alpha=0.15, label="birth = death")], loc="upper left")
+    save_figure(fig, output_path)
+    return output_path
+
+
+monthwise = pd.read_csv(FOUR_TUBE_OUTPUT_DIR / "four_scenario_m5_tube_monthwise_radii.csv")
+summary = pd.read_csv(FOUR_TUBE_OUTPUT_DIR / "four_scenario_m5_tube_summary.csv")
+for scenario in CUMULATIVE_SCENARIOS:
+    vines = pd.read_csv(FOUR_TUBE_OUTPUT_DIR / f"{scenario.slug}_observed_h1_vine_vertices_with_tube_flags.csv")
+    plot_vines_with_tubes(vines, scenario, monthwise, summary, FOUR_TUBE_OUTPUT_DIR)
+```
+
+
+```{python}
+#| label: ci-nb-bootstrap-cache-summary
+
+selected_model_cache_files = {
+    "observed_fitted_summary": OUTPUT_DIR / "selected_model_observed_fitted_h1_monthly_summary.csv",
+    "diagonal_thresholds": OUTPUT_DIR / "selected_model_diagonal_plane_threshold_comparison.csv",
+    "plane_month_flags": OUTPUT_DIR / "selected_model_plane_and_ranked_persistence_month_flags.csv",
+    "ranked_scalar_summary": OUTPUT_DIR / "selected_model_ranked_persistence_summary.csv",
+    "top25_ranked_features": OUTPUT_DIR / "selected_model_top25_ranked_persistence_features.csv",
+    "ranked_birth_death_monthwise": OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_monthwise.csv",
+    "ranked_birth_death_global": OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_by_rank.csv",
+    "ranked_birth_death_global_all": OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_all_ranks.csv",
+    "monthly_scalar_intervals": OUTPUT_DIR / "selected_model_monthly_scalar_summary_confidence_intervals.csv",
+    "global_scalar_intervals": OUTPUT_DIR / "selected_model_global_scalar_summary_confidence_intervals.csv",
+    "average_landscape_band": OUTPUT_DIR / "selected_model_average_lambda1_landscape_confidence_band.csv",
+    "monthly_landscape_intervals": OUTPUT_DIR / "selected_model_monthly_landscape_scalar_confidence_intervals.csv",
+}
+cache_status = pd.DataFrame(
+    [
+        {"cache_name": name, "path": str(path), "exists": path.exists(), "bytes": path.stat().st_size if path.exists() else np.nan}
+        for name, path in selected_model_cache_files.items()
+    ]
+)
+if not cache_status["exists"].all():
+    missing = cache_status.loc[~cache_status["exists"], "path"].tolist()
+    raise FileNotFoundError(f"Missing required selected-model cache files: {missing}")
+cache_status.to_csv(OUTPUT_DIR / "selected_model_cache_status.csv", index=False)
+```
+
+## Observed and Fitted $H_1$ Vineyards
+
+The observed diagrams come from the actual monthly deaths-per-capita fields. The fitted mean-field diagrams come from the expected death counts under our fitted negative-binomial model, divided by population. Comparing them helps separate the fitted signal path from the perturbations around that path.
+
+The code below loads observed and fitted mean-field $H_1$ features from the saved bootstrap workflow and summarizes them by month.
+
+```{python}
+#| label: ci-nb-observed-fitted-summary
+
+observed_fitted_summary = read_csv_required(OUTPUT_DIR / "selected_model_observed_fitted_h1_monthly_summary.csv", "observed and fitted monthly H_1 summary")
+observed_fitted_summary.to_csv(OUTPUT_DIR / "selected_model_observed_fitted_h1_monthly_summary.csv", index=False)
+
+pd.DataFrame(
+    {
+        "quantity": [
+            "observed finite H_1 points",
+            "observed maximum H_1 persistence",
+            "fitted mean-field finite H_1 points",
+            "fitted mean-field maximum H_1 persistence",
+        ],
+        "value": [
+            int(observed_fitted_summary["observed_n_h1"].sum()),
+            float(observed_fitted_summary["observed_max_h1"].max()),
+            int(observed_fitted_summary["fitted_n_h1"].sum()),
+            float(observed_fitted_summary["fitted_max_h1"].max()),
+        ],
+    }
+)
+```
+
+## Diagonal Planes and Bottleneck Distance
+
+Recall that in a persistence diagram, a birth-death point is close to the diagonal (the "birth = death" line) when its persistence is small. In [4], the authors used resampling to figure out what distance from the diagonal could be explained due to random variation. Working at the $5\%$ significance level, the cutoff is chosen so that points compatible with the model-based perturbation scale lie on the diagonal side of a line parallel to the birth = death line. We use the term "persistence threshold" to refer to the distance between the cutoff line and the birth = death line. Any observed (birth, death) point, a.k.a. topological feature, beyond the persistence threshold can be considered statistically significant. 
+
+We carry out a variant of this plan, first in every month and then globally for the whole vineyard. Our method is based on the bottleneck distance between two persistence diagrams, defined as the smallest radius $r$ such that the points of one diagram can be matched to the points of the other diagram, or to the diagonal, with every matched pair at $L^\infty$ distance at most $r$. 
+
+First, fix a month. Observe that a point's bottleneck distance to the diagonal is half its persistence, so we can use bottleneck distance to produce the cutoff line from [4]. A bottleneck radius of $r$ corresponds to a persistence threshold of $2r$.
+
+For each bootstrap replicate from the negative-binomial model, we compute the bottleneck distance between its persistence diagram and the fitted mean-field persistence diagram. This gives us a diagram-level perturbation radius: how far a noisy diagram moves away from the fitted mean-field diagram under the count model. Taking a high quantile of these radii gives a confidence band for the whole diagram. Later, we will use a similar method to find the radius of our confidence tubes for the vineyard.
+
+In each month, we get a line parallel to the birth = death line. Any point farther from the birth = death line than the cutoff is considered statistically significant. We generalize this to the setting of vineyards by aggregating the line distances (one per month) into a global distance of a plane in the vineyard. Any vine farther from the birth = death plane will be considered statistically significant.
+
+Our source chunk (earlier in this file), produces one test for each month, much as we had in the uniformity notebook. In fact, there is a large overlap between the months flagged in that notebook (Jaccard similarity $78\%$). But the result cannot be said to be a plane because the persistence threshold is different in each month. 
+
+There are several ways to stitch these together into a global plane. First, one could take the maximum threshold over all months. This would be a very conservative measure, that would flag only the most extreme months as statistically significant. Second, one could take the minimum threshold, under the philosophy that if one month considered a certain distance significant, then all months should consider that distance significant. This is a bit dangerous since it discounts the added variability in the other months. A middle road is to take the average of all the persistence thresholds. All three of these approaches are carried out below, and the table displays how many months are flagged as significant for each approach.
+
+The next cell uses the saved monthly population-normalized bottleneck radii to compare four ways of producing a diagonal-band rule. The first row keeps the threshold month-specific. The next three rows aggregate the month-specific thresholds into one vineyard-wide plane by taking the minimum, mean, or maximum threshold across months.
+
+```{python}
+#| label: ci-nb-diagonal-plane-results
+
+threshold_comparison = read_csv_required(OUTPUT_DIR / "selected_model_diagonal_plane_threshold_comparison.csv", "selected-model diagonal threshold comparison")
+plane_month_summary = clean_bool(
+    read_csv_required(OUTPUT_DIR / "selected_model_plane_and_ranked_persistence_month_flags.csv", "selected-model plane and ranked-persistence month flags"),
+    [
+        "bottleneck_monthwise_sheet",
+        "bottleneck_global_plane",
+        "old_max_simulated_global_plane",
+        "scalar_monthwise_any_rank",
+        "scalar_global_rank_any_rank",
+        "scalar_global_all_ranks_any_rank",
+    ],
+)
+monthly_tube_radii = read_csv_required(
+    FOUR_TUBE_OUTPUT_DIR / "four_scenario_m5_tube_monthwise_radii.csv",
+    "four-scenario monthwise bottleneck radii",
+)
+monthly_population_radii = monthly_tube_radii[monthly_tube_radii["scenario"].eq("monthly_population_normalized")].copy()
+diagonal_plane_data = observed_fitted_summary.merge(
+    monthly_population_radii[["month_index", "month_label", "threshold_95_monthwise"]],
+    on=["month_index", "month_label"],
+    how="inner",
+)
+
+def count_months_above_threshold(data: pd.DataFrame, threshold: float | None) -> int:
+    """Count months whose maximum observed persistence exceeds a threshold.
+
+    Args:
+        data: Monthly observed summary with threshold columns.
+        threshold: Constant threshold, or None to use the monthwise threshold.
+
+    Returns:
+        Number of months exceeding the chosen threshold.
+    """
+    if threshold is None:
+        flags = data["observed_max_h1"] > data["threshold_95_monthwise"]
+    else:
+        flags = data["observed_max_h1"] > threshold
+    return int(flags.sum())
+
+plane_aggregation_table = pd.DataFrame(
+    [
+        {
+            "rule": "month-specific threshold",
+            "persistence_threshold": np.nan,
+            "n_months_max_h1_significant": count_months_above_threshold(diagonal_plane_data, None),
+            "interpretation": "one cutoff per month",
+        },
+        {
+            "rule": "minimum threshold plane",
+            "persistence_threshold": float(diagonal_plane_data["threshold_95_monthwise"].min()),
+            "n_months_max_h1_significant": count_months_above_threshold(diagonal_plane_data, float(diagonal_plane_data["threshold_95_monthwise"].min())),
+            "interpretation": "least conservative global plane",
+        },
+        {
+            "rule": "mean threshold plane",
+            "persistence_threshold": float(diagonal_plane_data["threshold_95_monthwise"].mean()),
+            "n_months_max_h1_significant": count_months_above_threshold(diagonal_plane_data, float(diagonal_plane_data["threshold_95_monthwise"].mean())),
+            "interpretation": "middle global plane",
+        },
+        {
+            "rule": "maximum threshold plane",
+            "persistence_threshold": float(diagonal_plane_data["threshold_95_monthwise"].max()),
+            "n_months_max_h1_significant": count_months_above_threshold(diagonal_plane_data, float(diagonal_plane_data["threshold_95_monthwise"].max())),
+            "interpretation": "most conservative global plane",
+        },
+    ]
+)
+plane_aggregation_table.to_csv(OUTPUT_DIR / "selected_model_diagonal_plane_aggregation_methods.csv", index=False)
+display(plane_aggregation_table)
+```
+
+The table shows that the minimum threshold plane flags the most significant feature in every month. The maximum threshold is too conservative: it flags only the single most extreme month. The mean threshold gives a result close to the month-specific rule, but has the benefit of providing one plane that works for all months rather than different lines for each month.
+
+The next cell displays the cumulative diagonal-confidence-surface figures. This is the vineyard version of drawing a line parallel to the diagonal in a single persistence diagram, except that the line is allowed to change by month and is carried through the time axis. The raw-count version uses cumulative deaths; the population-normalized version uses cumulative deaths per capita.
+
+```{python}
+#| label: ci-nb-diagonal-plane-figure
+
+raw_plane_figure_path = require_file(
+    GRAPHICS_OUTPUT_DIR / "observed_vines_with_monthly_fasy_surface_cumulative_deaths.png",
+    "cumulative raw-count diagonal confidence-surface figure",
+)
+normalized_plane_figure_path = require_file(
+    GRAPHICS_OUTPUT_DIR / "observed_vines_with_monthly_fasy_surface_cumulative_deaths_per_capita.png",
+    "cumulative population-normalized diagonal confidence-surface figure",
+)
+
+display(Image(filename=str(raw_plane_figure_path)))
+display(Image(filename=str(normalized_plane_figure_path)))
+```
+
+In these figures, the red sheet is the diagonal confidence surface. Vines that move past that sheet (farther away from the birth = death plane) correspond to $H_1$ features whose persistence is larger than the selected count-noise scale. The population-normalized version is the one most directly comparable to the deaths-per-capita analyses elsewhere in the paper.
+
+The next figure puts the month-by-month maximum $H_1$ persistence on the same scale as the bootstrap percentile for the maximum top-ranked persistence. This is a way to see when the observed monthly maximum is large relative to the simulated count-noise worlds.
+
+```{python}
+#| label: ci-nb-diagonal-plane-plots
+
+monthly_scalar_for_plot = read_csv_required(OUTPUT_DIR / "selected_model_monthly_scalar_summary_confidence_intervals.csv", "selected-model monthly scalar intervals")
+rank1 = monthly_scalar_for_plot[monthly_scalar_for_plot["summary_statistic"].eq("max_persistence_top10")].sort_values("month_index")
+fig, ax = plt.subplots(figsize=(10, 4.2))
+ax.plot(rank1["month_index"], rank1["observed_value"], color="#2B5D7C", linewidth=1.4, label="observed maximum top-10 persistence")
+ax.plot(rank1["month_index"], rank1["ci_97_5"], color="#B03A2E", linewidth=1.2, label="selected-model 97.5% bootstrap percentile")
+flagged = rank1["observed_value"] > rank1["ci_97_5"]
+ax.scatter(rank1.loc[flagged, "month_index"], rank1.loc[flagged, "observed_value"], color="#B03A2E", s=18)
+ax.set_xlabel("Month index")
+ax.set_ylabel("Persistence")
+ax.set_title("Observed maximum $H_1$ persistence and selected-model bootstrap percentile")
+ax.legend()
+fig.tight_layout()
+save_figure(fig, "selected_model_rank1_persistence_with_scalar_radius")
+```
+
+The two time series track well together, illustrating that our simulated worlds are close to what happened.
+
+## Bottleneck Vineyard Tubes
+
+If we think about a vine as a summary statistic, then it's natural to want a 95% confidence tube around the vine where we'd be 95% certain that the true vine would be, for the true latent process that generates our data. In this section we create such tubes.
+
+The diagonal plane asks whether a feature is far enough from the diagonal to be larger than the count-noise scale. The bottleneck vineyard tube asks a different but closely related question: how far can the whole persistence diagram move, month by month, under the fitted count model? Because the bottleneck distance controls the maximum matching error for the entire diagram, a single global radius works for all vines at once. This is especially attractive in a vineyard, where vines may cross or exchange order. 
+
+Since the bottleneck distance uses $L^\infty$, the tube is box-shaped in the birth-death plane. At each vine point, the tube contains the $L^\infty$ box of half-width $r$ around that point. Connecting these boxes over time gives a square-cross-sectioned confidence tube around the plotted vines.
+
+The next cell reads the saved four-scenario tube summary and displays the two cumulative bottleneck-tube figures generated by the source chunks above.
+
+```{python}
+#| label: ci-nb-bottleneck-paper-figures
+
+four_tube_summary = read_csv_required(
+    FOUR_TUBE_OUTPUT_DIR / "four_scenario_m5_tube_summary.csv",
+    "four-scenario bottleneck tube summary",
+)
+cumulative_tube_summary = four_tube_summary[
+    four_tube_summary["scenario"].isin(["cumulative_raw_death_counts", "cumulative_population_normalized"])
+].copy()
+raw_radius = float(cumulative_tube_summary.loc[cumulative_tube_summary["scenario"].eq("cumulative_raw_death_counts"), "radius_95_global"].iloc[0])
+raw_threshold = float(cumulative_tube_summary.loc[cumulative_tube_summary["scenario"].eq("cumulative_raw_death_counts"), "threshold_95_global"].iloc[0])
+normalized_radius = float(cumulative_tube_summary.loc[cumulative_tube_summary["scenario"].eq("cumulative_population_normalized"), "radius_95_global"].iloc[0])
+normalized_threshold = float(cumulative_tube_summary.loc[cumulative_tube_summary["scenario"].eq("cumulative_population_normalized"), "threshold_95_global"].iloc[0])
+
+display(Markdown(
+    f"Using the bottleneck-distance calculation, the cumulative raw-count vineyard has global 95% tube radius "
+    f"$r = {raw_radius:.6g}$, corresponding to persistence threshold $2r = {raw_threshold:.6g}$. "
+    f"The cumulative population-normalized vineyard has global 95% tube radius "
+    f"$r = {normalized_radius:.6g}$, corresponding to persistence threshold $2r = {normalized_threshold:.6g}$."
+))
+
+display(cumulative_tube_summary[["scenario", "title", "units", "B_successful", "radius_95_global", "threshold_95_global"]])
+
+raw_tube_figure_path = require_file(
+    FOUR_TUBE_OUTPUT_DIR / "cumulative_raw_death_counts_vineyard_with_m5_confidence_tubes.png",
+    "cumulative raw-count bottleneck confidence-tube figure",
+)
+normalized_tube_figure_path = require_file(
+    FOUR_TUBE_OUTPUT_DIR / "cumulative_population_normalized_vineyard_with_m5_confidence_tubes.png",
+    "cumulative population-normalized bottleneck confidence-tube figure",
+)
+
+display(Image(filename=str(raw_tube_figure_path)))
+display(Image(filename=str(normalized_tube_figure_path)))
+```
+
+The cumulative raw-count tube has a large numerical radius because the units are cumulative deaths. The population-normalized tube is on the same kind of scale as the deaths-per-capita vineyards elsewhere in this notebook. The tubes show that our vines stay statistically significantly far away from the birth = death plane, and provide a visual sense of the uncertainty around the plotted vine paths.
+
+
+## Rank-Based Vineyard Uncertainty Tubes
+
+The bottleneck tube gives one radius for the whole vineyard, based on bottleneck distance. Our original concern was that the bottleneck distance might provide a radius that would be too large to be practically useful. So we also computed an alternative rank-based approach for the strongest few features. Within each month, we sort the $H_1$ features by persistence and compare the largest feature to the largest feature in each simulated diagram, the second-largest to the second-largest, and so on. We then use these comparisons to find a radius for the largest feature, a separate radius for the second-largest, etc. 
+
+Note that with this approach the n-th tube focuses on the n-th most persistent $H_1$ feature not the n-th vine specifically, so the tube follows the feature not the vine. If two vine paths cross, this table does not decide which topological feature is which after the crossing. Each radius is based on rank within a month. In this section, we investigate whether these tubes are narrower than the bottleneck radius approach.
+
+For each month, and each of the top ten topological features, we are able to use simulation to create a $95\%$ confidence radius. The resulting confidence set can be thought of as all the plausible (birth, death) pairs that might describe that ranked feature. Connecting these confidence sets as we move through time results in tubes.
+
+For each month, rank, and bootstrap replicate, we compare the fitted mean-field birth-death point with the corresponding simulated ranked point. The displacement is the larger of the absolute birth-coordinate displacement and the absolute death-coordinate displacement. The resulting radius is a birth-death-plane scale for that rank.
+
+We note that these tubes can also be used to test whether a vine is statistically significant, by checking if the birth = death line ever intersects the tube.
+
+The code below uses the results of the simulations above to produce the tubes. We start with the global rank-specific radii.
+
+```{python}
+#| label: ci-nb-rank-tube-load
+
+tube_monthwise = read_csv_required(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_monthwise.csv", "selected-model monthwise rank-based tube radii")
+tube_global_rank = read_csv_required(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_by_rank.csv", "selected-model global rank-based tube radii")
+tube_global_all = read_csv_required(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_radii_global_all_ranks.csv", "selected-model global all-ranks tube radius")
+tube_top25 = read_csv_required(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_top25_observed_features.csv", "selected-model top observed tube features")
+tube_summary = read_csv_required(OUTPUT_DIR / "selected_model_rank_based_birth_death_tube_summary_by_rank.csv", "selected-model tube summary by rank")
+```
+
+The next table gives one global radius for each rank. Rank 1 means the most persistent $H_1$ feature in a month, rank 2 means the second most persistent feature, and so on.
+
+```{python}
+#| label: ci-nb-rank-tube-global-rank
+
+display(tube_global_rank)
+```
+
+Note that the rank 1 radius is largest. That is what we should expect: the strongest feature has the most room to move in birth-death space under the simulated count perturbations. Lower-ranked features have smaller radii, but their observed persistences are also smaller.
+
+The all-ranks radius is the same as the rank 1 global radius here, about $3.43 \times 10^{-4}$. This means the maximum rank-based displacement is driven by the strongest feature. Compared with the cumulative population-normalized bottleneck radius above, the rank-based monthly radius is smaller, but it answers a narrower question: it tracks ranked features rather than controlling the full cumulative vineyard at once.
+
+
+## Scalar Summary Confidence Intervals
+
+Above, we made confidence tubes for vines in a vineyard. In this section, we make classical confidence intervals for numerical summary statistics. We rely again on our simulations from the negative binomial model.
+
+The summaries in this section reduce each monthly $H_1$ diagram to a few numbers. For consistency, we use the top 10 ranked $H_1$ points in each month. This captures the strongest features, and the reader is free to extend it to more features if desired. From those ranked values we compute the number of positive top-ranked features, the maximum top-ranked persistence, the total top-ranked persistence, and the mean and median positive top-ranked persistence. These summaries answer basic questions a reader naturally asks of a vineyard: how many strong features are present, how large is the strongest one, and how much total $H_1$ persistence is visible in that month?
+
+For each of these numerical statistics, we compute the same summaries for each selected-model bootstrap world, and then report percentile intervals, e.g., the middle $95\%$ most common numbers. These intervals shed light on how much variability one would expect from the numbers observed on our original data. 
+
+
+A second family of useful scalar summaries appears once we have chosen a persistence threshold. These summaries ask timing and duration questions: how many months exceed the threshold, when the first threshold crossing occurs, how long the longest above-threshold run lasts, and how much excess persistence accumulates over time.  In this file we keep the main scalar intervals focused on direct $H_1$ persistence summaries, because they do not require a second modeling choice about which threshold-crossing rule should define an event, but it would be easy for the interested user to extend our analysis to confidence intervals of the latter type.
+
+The code below carries this out using the saved simulations from above. The first table summarizes quantities computed over the whole observed vineyard. For example, `max_persistence_top10` is the largest persistence among the top ten ranked $H_1$ features across all months, while `mean_monthly_max_persistence_top10` averages the monthly maximum over time.
+
+```{python}
+#| label: ci-nb-scalar-summary-global
+
+monthly_scalar_ci = read_csv_required(OUTPUT_DIR / "selected_model_monthly_scalar_summary_confidence_intervals.csv", "selected-model monthly scalar confidence intervals")
+global_scalar_ci = read_csv_required(OUTPUT_DIR / "selected_model_global_scalar_summary_confidence_intervals.csv", "selected-model global scalar confidence intervals")
+
+display(global_scalar_ci)
+```
+
+The observed largest top-10 persistence is inside the selected-model bootstrap interval, and the same is true for the total persistence and the mean and median monthly maximum persistence. The count `total_positive_top10` is slightly below the fitted-model interval, which tells us that the observed vineyard has a few fewer positive ranked features than the simulated worlds. That count is less important here than the persistence magnitudes, because the strongest features are the objects driving the vineyard interpretation.
+
+The next table shows the same idea month by month for the maximum top-10 persistence. Each row compares the observed monthly maximum with the fitted mean-field value and the middle 95% of the bootstrap values for that month.
+
+```{python}
+#| label: ci-nb-scalar-summary-monthly-max
+
+monthly_max_scalar_ci = monthly_scalar_ci[monthly_scalar_ci["summary_statistic"].eq("max_persistence_top10")].copy()
+display(monthly_max_scalar_ci.head(12))
+```
+
+This table is best read as a template for the time series plot below. A month whose observed value is above the upper percentile is a month where the strongest $H_1$ feature is larger than the fitted count model usually produces for that same month.
+
+
+We finish this section with a figure that illustrates the scalar intervals. The graph shows the observed max $H_1$ persistence time series as well as a 95% confidence interval for other values it could plausibly have taken, according to our negative binomial model.
+
+```{python}
+#| label: ci-nb-scalar-summary-plots
+
+max_ci = monthly_scalar_ci[monthly_scalar_ci["summary_statistic"].eq("max_persistence_top10")].sort_values("month_index")
+fig, ax = plt.subplots(figsize=(11, 4.4))
+ax.fill_between(max_ci["month_index"], max_ci["ci_2_5"], max_ci["ci_97_5"], color="#A7C7D9", alpha=0.55, label="selected-model bootstrap 95% interval")
+ax.plot(max_ci["month_index"], max_ci["bootstrap_mean"], color="#2B5D7C", linewidth=1.2, label="bootstrap mean")
+ax.plot(max_ci["month_index"], max_ci["observed_value"], color="#B03A2E", linewidth=1.1, label="observed")
+ax.set_xlabel("Month index")
+ax.set_ylabel("Top-10 maximum persistence")
+ax.set_title("Monthly maximum $H_1$ persistence with selected-model bootstrap interval")
+ax.legend()
+fig.tight_layout()
+save_figure(fig, "selected_model_monthly_max_persistence_scalar_ci")
+```
+
+The observed curve mostly travels through the bootstrap band, which is what we expect from a fitted model that tracks the data well. The main visual use of this plot is to identify months where the observed maximum persistence approaches or exceeds the upper edge of the model-based interval.
+
+In our forecasting file, we extend this into the future, including the 95% intervals.
+
+## Persistence Landscape Confidence Intervals
+
+Persistence landscapes convert birth-death points into tent functions [1]. A point born at $b$ and dying at $d$ contributes a triangular function that rises from zero at $b$ to height $(d-b)/2$ at the midpoint, then falls back to zero at $d$. The first landscape value $\lambda_1(x)$ is the largest tent height at position $x$. Landscapes turn the same birth-death information into functional summaries whose peaks and areas can be summarized by the same bootstrap replicates.
+
+We compute landscape summaries from the same top-10 ranked points used above. Following [1] we also produce landscape bands that summarize the average first landscape curve across months, with a pointwise 95% selected-model bootstrap band.
+
+The first landscape confidence band is evaluated pointwise on a fixed grid of filtration values. The column `x` gives the filtration value, and the remaining columns give the observed average first landscape, the fitted-model average, and bootstrap pointwise confidence limits at that same value of `x`. The column `grid_index` is only the row number of the evaluation grid, used internally to align rows. The next table shows the observed and fitted $\lambda_1(x)$ values for various $x$, along with the bootstrap intervals. These numbers are used in the figure that follows. At each grid value `x`, it reports the observed average first landscape value, the fitted mean-field value, the bootstrap mean, and the pointwise 95% bootstrap interval.
+
+```{python}
+#| label: ci-nb-landscape-band-table
+
+landscape_ci = read_csv_required(OUTPUT_DIR / "selected_model_average_lambda1_landscape_confidence_band.csv", "selected-model average first landscape confidence band")
+landscape_scalar_ci = read_csv_required(OUTPUT_DIR / "selected_model_monthly_landscape_scalar_confidence_intervals.csv", "selected-model monthly landscape scalar confidence intervals")
+
+display(landscape_ci.head())
+```
+
+This table is useful mainly for drawing the landscape band in the figure below. 
+
+The second table reduces each monthly landscape to scalar quantities. The peak summary records the height of the first landscape, while the area summary records the total tent area contributed by the top-ranked features. The point is that we can also get monthwise confidence intervals.
+
+```{python}
+#| label: ci-nb-landscape-scalar-table
+
+display(landscape_scalar_ci.head(12))
+```
+
+For the first year shown here, the observed landscape peaks are generally within the model-based intervals. Months with larger observed peaks correspond to months where the strongest landscape tent is taller, hence where the leading $H_1$ persistence is larger.
+
+We conclude this section with a figure that shows how the bootstrap mean and bootstrap variability compare with the data we actually observed.
+
+```{python}
+#| label: ci-nb-landscape-plots
+
+fig, ax = plt.subplots(figsize=(8.5, 4.6))
+ax.fill_between(landscape_ci["x"], landscape_ci["ci_2_5"], landscape_ci["ci_97_5"], color="#A7C7D9", alpha=0.6, label="selected-model bootstrap pointwise 95% band")
+ax.plot(landscape_ci["x"], landscape_ci["bootstrap_mean"], color="#2B5D7C", linewidth=1.4, label="bootstrap mean")
+ax.plot(landscape_ci["x"], landscape_ci["observed_lambda1"], color="#B03A2E", linewidth=1.2, label="observed")
+ax.set_xlabel("Deaths per capita filtration value")
+ax.set_ylabel("Average first landscape value")
+ax.set_title("Average $H_1$ persistence landscape with selected-model bootstrap band")
+ax.legend()
+fig.tight_layout()
+save_figure(fig, "selected_model_average_lambda1_landscape_band")
+```
+
+The observed average landscape lies close to the bootstrap mean over most of the filtration range. The band is narrow near zero because all landscapes are forced to start at zero, and it widens where the main tent functions reach their peaks. This is the functional-summary version of the same pattern we saw in the scalar table: the fitted count model produces landscape summaries close to the observed ones, while still giving a visible scale for random variation.
+
+## Conclusion
+
+In this notebook we created a bridge between vineyards and confidence intervals. We first showed how to extend the confidence-set logic of [4] from persistence diagrams to diagonal bands and threshold planes in vineyards. We then used bottleneck distance to make a global vineyard confidence tube, added rank-based birth-death diagnostics for the strongest few features, and made $95\%$ confidence intervals for numerical summaries computed from the topological features our analysis found. Each of the four confidence sections uses 1000 bootstrap simulations from a negative binomial model that fits the data well.
+
+The most important limitation is that every interval is conditional on the fitted negative-binomial model. The residual diagnostics show that it is a reasonable working model for this purpose, as it captures the spatiotemporal autocorrelation and leaves mostly independent residuals, but it is likely that other models would also achieve independent residuals (especially if they used covariates like the unemployment rate), and would result in different confidence intervals. Our results should therefore be read as model-based sensitivity analysis for $H_1$ vineyard summaries.
+
+## References
+
+[1] Bubenik, P. (2015). "Statistical topological data analysis using persistence landscapes." *Journal of Machine Learning Research*, 16, 77-102.
+
+[2] Cohen-Steiner, D., Edelsbrunner, H., and Harer, J. (2007). "Stability of persistence diagrams." *Discrete & Computational Geometry*, 37, 103-120.
+
+[3] Cohen-Steiner, D., Edelsbrunner, H., and Morozov, D. (2006). "Vines and vineyards by updating persistence in linear time." *Proceedings of the Twenty-Second Annual Symposium on Computational Geometry*.
+
+[4] Fasy, B. T., Lecci, F., Rinaldo, A., Wasserman, L., Balakrishnan, S., and Singh, A. (2014). "Confidence sets for persistence diagrams." *Annals of Statistics*, 42(6), 2301-2339.
+
+[5] Hilbe, J. M. (2011). *Negative Binomial Regression*. Cambridge University Press.
+
+[6] Ma, L., Tran, L., and White, D. (2021). "A statistical analysis of drug seizures and opioid overdose deaths in Ohio from 2014 to 2018." *Journal of Student Research*, 10(1).
+
+[7] Rosenblum, D., Unick, J., and Ciccarone, D. (2020). "The rapidly changing US illicit drug market and the potential for an improved early warning system: evidence from Ohio drug crime labs." *Drug and Alcohol Dependence*, 208, 107779.
+

@@ -1,0 +1,2 @@
+model_name,n_observations,n_parameters_estimated,logLik,AIC,BIC,residual_sum_of_squares,dispersion_or_alpha,mean_residual_morans_i,n_months_moran_q_lt_0_05,lag1_pooled_residual_acf,lag12_pooled_residual_acf,prop_counties_ljung_box_p_lt_0_05
+selected negative-binomial model,18744,741,-27042.163200951534,55556.32640190307,61325.557331321164,18090.464850240467,0.005813921749336292,,0,0.0048634519876729985,-0.00777155204913618,

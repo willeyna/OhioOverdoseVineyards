@@ -1,0 +1,13 @@
+month,actual county label,actual max H1 persistence,top five predicted counties,actual county in top five,probability on actual county
+2023-01,Marion,9.251977610214184e-05,Vinton; Scioto; Adams; Brown; Pike,False,6.830895352925126e-09
+2023-02,Pike,0.0001481426613829,Vinton; Scioto; Adams; Brown; Pike,True,0.0573289174044642
+2023-03,Brown,0.000114215227174,Vinton; Scioto; Adams; Brown; Pike,True,0.0578833642342482
+2023-04,Pike,0.0001111069960371,Vinton; Scioto; Adams; Brown; Pike,True,0.0565527091618526
+2023-05,Scioto,0.0001806333282385,Vinton; Scioto; Adams; Brown; Pike,True,0.0710364765566695
+2023-06,Gallia,0.0001379976540398,Vinton; Scioto; Adams; Brown; Pike,False,0.0542400437814954
+2023-07,Adams,0.0001090076668725,Vinton; Scioto; Adams; Brown; Pike,True,0.0647170147752342
+2023-08,Ross,0.0001045737964209,Vinton; Scioto; Adams; Brown; Pike,False,0.0134709963295898
+2023-09,Vinton,0.0001603334936668,Vinton; Scioto; Adams; Brown; Pike,True,0.1655957361200389
+2023-10,Scioto,0.0001250538426266,Vinton; Scioto; Adams; Brown; Pike,True,0.0685959666289411
+2023-11,Adams,0.00014534355583,Vinton; Scioto; Adams; Brown; Pike,True,0.0630399834271288
+2023-12,Meigs,9.18822070106124e-05,Vinton; Scioto; Adams; Brown; Pike,False,0.0477027538095516

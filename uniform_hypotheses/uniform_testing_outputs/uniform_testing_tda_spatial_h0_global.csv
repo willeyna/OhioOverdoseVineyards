@@ -1,0 +1,3 @@
+null,method,statistic,p_value_tail,observed,null_mean,null_sd,n_null_leq_observed,B,empirical_p_left
+spatially_exchangeable_county_rates,tda_spatial_h0_filter_down,mean_total_lifespan,left,0.0004657103134730988,0.0005098622285027388,4.14586622255472e-06,0,1000,0.0
+spatially_exchangeable_county_rates,tda_spatial_h0_filter_down,sum_total_lifespan,left,0.09919629676977004,0.10860065467108336,0.0008830695054041553,0,1000,0.0
