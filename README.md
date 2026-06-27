@@ -1,6 +1,6 @@
 # Characterizing Local Maxima of the Ohio overdose epidemic with Vineyards 
 
-This repository contains the code, data, and notebooks to analyze the spatial and temporal patterns of the Ohio drug overdose epidemic using topological data analysis (TDA)—specifically the **Vineyard** algorithm—along with classical statistical methods.
+This repository contains the code, data, and notebooks to analyze the spatial and temporal patterns of the Ohio drug overdose epidemic using topological data analysis (TDA). The analyses focus on the Vineyard algorithm alongside classical statistical methods.
 
 ## Directory Structure & Contents
 
@@ -14,27 +14,37 @@ This repository contains the code, data, and notebooks to analyze the spatial an
 
 ### Sub-studies
 
-The analysis is broken down into four main sub-study directories. Notebooks in these directories run dynamically against the shared root `data/` folder and `vineyard` package:
+The analysis is broken down into four main sub-study directories.
 
 1. **`uniform_hypotheses/`**: Testing uniform null hypothesis models for Ohio county-month overdose deaths.
    - `uniform-testing.qmd`: Quarto notebook running uniformity and spatial-autocorrelation tests.
    - `uniform-testing.html`: Pre-rendered HTML report.
    - `uniform_testing_outputs/`: Saved CSV outputs (simulated null replicates, monthwise p-values, etc.).
-   
-2. **`forecasting/`**: Time-series forecasting and evaluation of Ohio overdose rates and persistence features.
-   - `forecasting-vineyards.qmd`: Quarto notebook detailing the forecasting models (SARIMAX, etc.).
-   - `forecasting-vineyards.html`: Pre-rendered HTML report.
-   - `forecasting_vineyards_outputs/`: Saved CSV outputs (forecast holdouts, significance metrics, etc.) and selected plots.
 
-3. **`spatiotemporal_correlation/`**: Analysis of spatiotemporal autocorrelation using classical covariance and TDA tests.
+2. **`spatiotemporal_correlation/`**: Analysis of spatiotemporal autocorrelation using classical covariance and TDA tests.
    - `spatiotemporal-autocorrelation-classical-and-tda.qmd`: Quarto notebook for spatiotemporal autocorrelation.
    - `spatiotemporal-autocorrelation-classical-and-tda.html`: Pre-rendered HTML report.
    - `spatiotemporal_autocorrelation_outputs/`: Saved output files (prepared spatiotemporal panel data, covariance matrices, and TDA summaries).
 
-4. **`confidence_intervals/`**: Constructing confidence bands and intervals for vineyard persistence diagrams and metrics.
+3. **`confidence_intervals/`**: Constructing confidence bands and intervals for vineyard persistence diagrams and metrics.
    - `confidence-intervals-vineyards.qmd`: Quarto notebook for confidence interval estimation.
    - `confidence-intervals-vineyards.html`: Pre-rendered HTML report.
    - `confidence_intervals_outputs/`: Saved CSV outputs containing simulated null replicates, monthwise vineyard tube geometries, and other output from the TDA computations.
+
+4. **`forecasting/`**: Time-series forecasting and evaluation of Ohio overdose rates and persistence features.
+   - `forecasting-vineyards.qmd`: Quarto notebook detailing the forecasting models (SARIMAX, etc.).
+   - `forecasting-vineyards.html`: Pre-rendered HTML report.
+   - `forecasting_vineyards_outputs/`: Saved CSV outputs (forecast holdouts, significance metrics, etc.) and selected plots.
+
+
+## HTML Reports
+
+The HTML files for each sub-study are also available through GitHub Pages:
+
+- **Uniform Hypothesis Testing:** https://willeyna.github.io/OhioOverdoseVineyards/uniform_hypotheses/uniform-testing.html
+- **Spatiotemporal Autocorrelation:** https://willeyna.github.io/OhioOverdoseVineyards/spatiotemporal_correlation/spatiotemporal-autocorrelation-classical-and-tda.html
+- **Confidence Intervals:** https://willeyna.github.io/OhioOverdoseVineyards/confidence_intervals/confidence-intervals-vineyards.html
+- **Forecasting:** https://willeyna.github.io/OhioOverdoseVineyards/forecasting/forecasting-vineyards.html
 
 ---
 
