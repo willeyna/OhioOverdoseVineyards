@@ -41,10 +41,12 @@ The analysis is broken down into four main sub-study directories.
 
 The HTML files for each sub-study are also available through GitHub Pages:
 
-- **Uniform Hypothesis Testing:** https://willeyna.github.io/OhioOverdoseVineyards/uniform_hypotheses/uniform-testing.html
-- **Spatiotemporal Autocorrelation:** https://willeyna.github.io/OhioOverdoseVineyards/spatiotemporal_correlation/spatiotemporal-autocorrelation-classical-and-tda.html
-- **Confidence Intervals:** https://willeyna.github.io/OhioOverdoseVineyards/confidence_intervals/confidence-intervals-vineyards.html
-- **Forecasting:** https://willeyna.github.io/OhioOverdoseVineyards/forecasting/forecasting-vineyards.html
+| Sub-study | Link |
+|----------|------|
+| Uniform Hypothesis Testing | https://willeyna.github.io/OhioOverdoseVineyards/uniform_hypotheses/uniform-testing.html |
+| Spatiotemporal Autocorrelation | https://willeyna.github.io/OhioOverdoseVineyards/spatiotemporal_correlation/spatiotemporal-autocorrelation-classical-and-tda.html |
+| Confidence Intervals | https://willeyna.github.io/OhioOverdoseVineyards/confidence_intervals/confidence-intervals-vineyards.html |
+| Forecasting | https://willeyna.github.io/OhioOverdoseVineyards/forecasting/forecasting-vineyards.html |
 
 ---
 
