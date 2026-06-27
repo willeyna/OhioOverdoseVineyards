@@ -1,0 +1,1 @@
+See the rendered report for this study on GitHub Pages: [confidence-intervals-vineyards.html](https://willeyna.github.io/OhioOverdoseVineyards/confidence_intervals/confidence-intervals-vineyards.html)
